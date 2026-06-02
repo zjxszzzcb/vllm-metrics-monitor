@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d28;
+    --border: #2a2d3a;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --accent: #6366f1;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --cyan: #06b6d4;
+    --orange: #f97316;
+    --pink: #ec4899;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    min-height: 100vh;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .header h1 {
+    font-size: 24px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+    animation: pulse 2s infinite;
+  }
+  .status-dot.disconnected { background: var(--red); animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .time-range {
+    display: flex;
+    gap: 4px;
+    background: var(--card);
+    border-radius: 8px;
+    padding: 3px;
+    border: 1px solid var(--border);
+  }
+  .time-range button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+  }
+  .time-range button.active {
+    background: var(--accent);
+    color: white;
+  }
+  .time-range button:hover:not(.active) { color: var(--text); }
+  .last-update {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* Cards */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card .label {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .card .value {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .card .sub {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  /* Charts */
+  .charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .chart-panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .chart-panel h3 {
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 12px;
+    color: var(--text-dim);
+  }
+  .chart-container {
+    position: relative;
+    height: 200px;
+  }
+
+  /* Engine Table */
+  .engine-table-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    overflow-x: auto;
+  }
+  .engine-table-wrap h3 {
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 12px;
+    color: var(--text-dim);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-dim);
+    font-weight: 500;
+  }
+  td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  tr:last-child td { border-bottom: none; }
+
+  @media (max-width: 540px) {
+    .charts-grid { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span class="status-dot" id="statusDot"></span> vLLM Dashboard <span style="font-size:12px;color:var(--text-dim);font-weight:400">v0.1.0</span></h1>
+  <div class="header-right">
+    <span class="last-update" id="lastUpdate">Connecting...</span>
+    <div class="time-range">
+      <button data-minutes="15">15m</button>
+      <button data-minutes="60" class="active">1h</button>
+      <button data-minutes="360">6h</button>
+      <button data-minutes="1440">24h</button>
+    </div>
+  </div>
+</div>
+
+<!-- Status Cards -->
+<div class="cards">
+  <div class="card">
+    <div class="label">Running Requests</div>
+    <div class="value" id="cardRunning">-</div>
+  </div>
+  <div class="card">
+    <div class="label">Waiting Requests</div>
+    <div class="value" id="cardWaiting">-</div>
+  </div>
+  <div class="card">
+    <div class="label">KV Cache</div>
+    <div class="value" id="cardKV">-</div>
+    <div class="sub" id="cardKVSub"></div>
+  </div>
+  <div class="card">
+    <div class="label">Requests/s</div>
+    <div class="value" id="cardRPS">-</div>
+  </div>
+  <div class="card">
+    <div class="label">Output Tokens/s</div>
+    <div class="value" id="cardTPS">-</div>
+  </div>
+  <div class="card">
+    <div class="label">Cache Hit Rate</div>
+    <div class="value" id="cardHitRate">-</div>
+  </div>
+  <div class="card">
+    <div class="label">Total Requests</div>
+    <div class="value" id="cardTotalReq">-</div>
+  </div>
+  <div class="card">
+    <div class="label">Uptime</div>
+    <div class="value" id="cardUptime">-</div>
+  </div>
+</div>
+
+<!-- Charts -->
+<div class="charts-grid">
+  <div class="chart-panel">
+    <h3>Running Requests</h3>
+    <div class="chart-container"><canvas id="chartRunning"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Waiting Requests</h3>
+    <div class="chart-container"><canvas id="chartWaiting"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Requests / second</h3>
+    <div class="chart-container"><canvas id="chartRPS"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Output Tokens / second</h3>
+    <div class="chart-container"><canvas id="chartTPS"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Input Tokens / second</h3>
+    <div class="chart-container"><canvas id="chartInputTPS"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>KV Cache Usage (%)</h3>
+    <div class="chart-container"><canvas id="chartKV"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Cache Hit Rate (%)</h3>
+    <div class="chart-container"><canvas id="chartHitRate"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Latency (TTFT / ITL / E2E)</h3>
+    <div class="chart-container"><canvas id="chartLatency"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Per-Engine Running Requests</h3>
+    <div class="chart-container"><canvas id="chartEngineRunning"></canvas></div>
+  </div>
+</div>
+
+<!-- Engine Table -->
+<div class="engine-table-wrap">
+  <h3>Engine Details</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Engine</th>
+        <th>Running</th>
+        <th>Waiting</th>
+        <th>KV Cache</th>
+        <th>Prompt Tokens</th>
+        <th>Gen Tokens</th>
+      </tr>
+    </thead>
+    <tbody id="engineTableBody">
+      <tr><td colspan="6" style="text-align:center;color:var(--text-dim)">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+// --- Helpers ---
+function fmtNum(n, decimals) {
+  if (n == null || isNaN(n)) return '-';
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return Number(n).toFixed(decimals != null ? decimals : 0);
+}
+
+function fmtUptime(seconds) {
+  if (!seconds || seconds < 0) return '-';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString();
+}
+
+// --- Chart Setup ---
+const CHART_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#22c55e', '#eab308', '#f97316'];
+const ENGINE_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#22c55e'];
+
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 300 },
+  scales: {
+    x: {
+      type: 'time',
+      time: { tooltipFormat: 'HH:mm:ss', displayFormats: { minute: 'HH:mm', second: 'HH:mm:ss' } },
+      grid: { color: 'rgba(255,255,255,0.05)' },
+      ticks: { color: '#888', maxTicksLimit: 8 },
+    },
+    y: {
+      grid: { color: 'rgba(255,255,255,0.05)' },
+      ticks: { color: '#888' },
+      beginAtZero: true,
+    },
+  },
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      backgroundColor: '#1a1d28',
+      borderColor: '#2a2d3a',
+      borderWidth: 1,
+      titleColor: '#e0e0e0',
+      bodyColor: '#e0e0e0',
+    },
+  },
+  elements: {
+    point: { radius: 0, hoverRadius: 3 },
+    line: { tension: 0.3, borderWidth: 2 },
+  },
+};
+
+function makeChart(canvasId, datasets, extraOpts) {
+  const opts = JSON.parse(JSON.stringify(chartDefaults));
+  if (extraOpts) {
+    for (const k of Object.keys(extraOpts)) {
+      if (typeof extraOpts[k] === 'object' && !Array.isArray(extraOpts[k])) {
+        opts[k] = { ...opts[k], ...extraOpts[k] };
+      } else {
+        opts[k] = extraOpts[k];
+      }
+    }
+  }
+  if (datasets.length > 1) {
+    opts.plugins.legend = { display: true, labels: { color: '#888', boxWidth: 12, padding: 12 } };
+  }
+  return new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: { datasets },
+    options: opts,
+  });
+}
+
+function tsToPoints(timestamps, values) {
+  return timestamps.map((t, i) => ({ x: t * 1000, y: values[i] }));
+}
+
+// --- State ---
+let selectedMinutes = 60;
+let charts = {};
+let connected = false;
+
+function initCharts() {
+  charts.running = makeChart('chartRunning', [
+    { label: 'Total', borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)', fill: true, data: [] },
+  ]);
+  charts.waiting = makeChart('chartWaiting', [
+    { label: 'Total', borderColor: '#eab308', backgroundColor: 'rgba(234,179,8,0.1)', fill: true, data: [] },
+  ]);
+  charts.rps = makeChart('chartRPS', [
+    { label: 'req/s', borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)', fill: true, data: [] },
+  ]);
+  charts.tps = makeChart('chartTPS', [
+    { label: 'tokens/s', borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, data: [] },
+  ]);
+  charts.inputTps = makeChart('chartInputTPS', [
+    { label: 'tokens/s', borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, data: [] },
+  ]);
+  charts.kv = makeChart('chartKV', [
+    { label: 'Max %', borderColor: '#ec4899', backgroundColor: 'rgba(236,72,153,0.1)', fill: true, data: [] },
+  ], { scales: { y: { ...chartDefaults.scales.y, max: 100,
+    ticks: { color: '#888', callback: v => v + '%' } } } });
+  charts.hitRate = makeChart('chartHitRate', [
+    { label: 'Hit Rate %', borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.1)', fill: true, data: [] },
+  ], { scales: { y: { ...chartDefaults.scales.y, max: 100,
+    ticks: { color: '#888', callback: v => v + '%' } } } });
+  charts.latency = makeChart('chartLatency', [
+    { label: 'TTFT (s)', borderColor: '#6366f1', data: [] },
+    { label: 'ITL (ms)', borderColor: '#3b82f6', data: [] },
+    { label: 'E2E (s)', borderColor: '#22c55e', data: [] },
+  ], {
+    scales: { y: { ...chartDefaults.scales.y,
+      ticks: { color: '#888', callback: v => v >= 1 ? v.toFixed(1) + 's' : (v * 1000).toFixed(0) + 'ms' } } },
+    plugins: { legend: { display: true, labels: { color: '#888', boxWidth: 12, padding: 12 } } },
+  });
+  charts.engineRunning = makeChart('chartEngineRunning', [
+    { label: 'Engine 0', borderColor: ENGINE_COLORS[0], data: [] },
+    { label: 'Engine 1', borderColor: ENGINE_COLORS[1], data: [] },
+    { label: 'Engine 2', borderColor: ENGINE_COLORS[2], data: [] },
+    { label: 'Engine 3', borderColor: ENGINE_COLORS[3], data: [] },
+  ], {
+    plugins: { legend: { display: true, labels: { color: '#888', boxWidth: 12, padding: 12 } } },
+  });
+}
+
+function updateChart(chart, timestamps, values) {
+  if (!chart || !timestamps || !values) return;
+  chart.data.datasets[0].data = tsToPoints(timestamps, values);
+  chart.update('none');
+}
+
+function updateMultiChart(chart, datasetsData) {
+  if (!chart) return;
+  datasetsData.forEach((d, i) => {
+    if (chart.data.datasets[i] && d.timestamps && d.values) {
+      chart.data.datasets[i].data = tsToPoints(d.timestamps, d.values);
+    }
+  });
+  chart.update('none');
+}
+
+// --- Data Fetching ---
+async function fetchCurrent() {
+  try {
+    const resp = await fetch('/api/current');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (!data) return;
+    connected = true;
+    document.getElementById('statusDot').classList.remove('disconnected');
+
+    document.getElementById('cardRunning').textContent = fmtNum(data.num_requests_running);
+    document.getElementById('cardWaiting').textContent = fmtNum(data.num_requests_waiting);
+    document.getElementById('cardKV').textContent = data.kv_cache_usage_perc.toFixed(2) + '%';
+    document.getElementById('cardKVSub').textContent = 'Peak across engines';
+    document.getElementById('cardRPS').textContent = fmtNum(data.requests_per_second, 1);
+    document.getElementById('cardTPS').textContent = fmtNum(data.tokens_per_second, 0);
+    document.getElementById('cardHitRate').textContent = data.cache_hit_rate.toFixed(1) + '%';
+    document.getElementById('cardTotalReq').textContent = fmtNum(data.request_success_total);
+    document.getElementById('cardUptime').textContent = fmtUptime(data.uptime);
+    document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    connected = false;
+    document.getElementById('statusDot').classList.add('disconnected');
+    document.getElementById('lastUpdate').textContent = 'Disconnected';
+  }
+}
+
+async function fetchHistory() {
+  try {
+    const resp = await fetch('/api/history?minutes=' + selectedMinutes);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data || !data.timestamps || data.timestamps.length === 0) return;
+
+    updateChart(charts.running, data.timestamps, data.num_requests_running);
+    updateChart(charts.waiting, data.timestamps, data.num_requests_waiting);
+    updateChart(charts.rps, data.timestamps, data.requests_per_second);
+    updateChart(charts.tps, data.timestamps, data.tokens_per_second);
+    updateChart(charts.inputTps, data.timestamps, data.input_tokens_per_second);
+    updateChart(charts.kv, data.timestamps, data.kv_cache_usage_perc.map(v => v * 100));
+    updateChart(charts.hitRate, data.timestamps, data.cache_hit_rate.map(v => v * 100));
+
+    // Latency: ITL is in seconds but we want to show it as ms in the tooltip
+    const ttftData = data.ttft_avg;
+    const itlData = data.itl_avg;
+    const e2eData = data.e2e_avg;
+    updateMultiChart(charts.latency, [
+      { timestamps: data.timestamps, values: ttftData },
+      { timestamps: data.timestamps, values: itlData },
+      { timestamps: data.timestamps, values: e2eData },
+    ]);
+
+    // Per-engine running requests
+    const engHist = data.engine_history || {};
+    const engineIds = Object.keys(engHist).sort((a, b) => a - b);
+    const engineDatasets = engineIds.map(eid => ({
+      timestamps: engHist[eid].timestamps,
+      values: engHist[eid].running,
+    }));
+    // Pad to 4 datasets if fewer engines
+    while (engineDatasets.length < 4) engineDatasets.push({ timestamps: [], values: [] });
+    updateMultiChart(charts.engineRunning, engineDatasets);
+  } catch (e) {
+    console.error('Failed to fetch history:', e);
+  }
+}
+
+async function fetchEngineTable() {
+  try {
+    const resp = await fetch('/api/current');
+    if (!resp.ok) return;
+    // We need engine data - fetch from history which includes engine_history
+    const histResp = await fetch('/api/history?minutes=1');
+    if (!histResp.ok) return;
+    const histData = await histResp.json();
+
+    // Get current values from latest history point
+    const currentResp = await fetch('/api/current');
+    const currentData = await currentResp.json();
+
+    // Build table from engine_history - use the last data point
+    const tbody = document.getElementById('engineTableBody');
+    const engHist = histData.engine_history || {};
+    const engineIds = Object.keys(engHist).sort((a, b) => a - b);
+
+    if (engineIds.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim)">No engine data</td></tr>';
+      return;
+    }
+
+    let html = '';
+    for (const eid of engineIds) {
+      const e = engHist[eid];
+      const lastRunning = e.running ? e.running[e.running.length - 1] : '-';
+      const lastWaiting = e.waiting ? e.waiting[e.waiting.length - 1] : '-';
+      const lastKV = e.kv_cache ? (e.kv_cache[e.kv_cache.length - 1] * 100).toFixed(2) + '%' : '-';
+      html += '<tr>';
+      html += '<td>Engine ' + eid + '</td>';
+      html += '<td>' + lastRunning + '</td>';
+      html += '<td>' + lastWaiting + '</td>';
+      html += '<td>' + lastKV + '</td>';
+      html += '<td>-</td>';
+      html += '<td>-</td>';
+      html += '</tr>';
+    }
+    tbody.innerHTML = html;
+  } catch (e) {
+    console.error('Failed to fetch engine table:', e);
+  }
+}
+
+// --- Time Range Buttons ---
+document.querySelectorAll('.time-range button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.time-range button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedMinutes = parseInt(btn.dataset.minutes);
+    fetchHistory();
+  });
+});
+
+// --- Init ---
+initCharts();
+
+// Initial load
+fetchCurrent();
+fetchHistory();
+fetchEngineTable();
+
+// Periodic refresh
+setInterval(fetchCurrent, 3000);
+setInterval(fetchHistory, 3000);
+setInterval(fetchEngineTable, 3000);
+</script>
+</body>
+</html>
