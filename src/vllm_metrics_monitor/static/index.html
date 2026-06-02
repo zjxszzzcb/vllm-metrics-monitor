@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>vLLM Dashboard</title>
+<title>vLLM Metrics Dashboard</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
@@ -187,7 +188,11 @@
 <body>
 
 <div class="header">
-  <h1><span class="status-dot" id="statusDot"></span> vLLM Dashboard <span style="font-size:12px;color:var(--text-dim);font-weight:400">v0.1.0</span></h1>
+  <h1 style="display:flex;align-items:baseline;gap:10px">
+    <span class="status-dot" id="statusDot"></span>
+    vLLM Metrics Dashboard
+    <span style="font-size:12px;color:var(--text-dim);font-weight:400;margin-top:auto">v0.1.0</span>
+  </h1>
   <div class="header-right">
     <span class="last-update" id="lastUpdate">Connecting...</span>
     <div class="time-range">

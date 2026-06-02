@@ -1,13 +1,17 @@
-# vLLM Metrics Monitor
+<div align="center">
 
-A lightweight, zero-dependency monitoring dashboard for [vLLM](https://github.com/vllm-project/vllm) inference servers. Scrapes Prometheus metrics, persists to SQLite, and renders real-time time-series charts in the browser.
+# ⚡ vLLM Metrics Monitor
 
-```
-pip install vllm-metrics-monitor
-vmm http://your-vllm:8000/metrics
-```
+Real-time monitoring dashboard for [vLLM](https://github.com/vllm-project/vllm) inference servers.
 
-## Features
+[![PyPI](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+</div>
+
+![Dashboard Preview](docs/screenshot.webp)
+
+## ✨ Features
 
 - 📊 **9 real-time time-series charts** — Running/Waiting Requests, Requests/s, Output/Input Tokens/s, KV Cache, Cache Hit Rate, Latency (TTFT/ITL/E2E), Per-Engine Requests
 - 🃏 **Live status cards** — Key metrics at a glance
@@ -16,19 +20,28 @@ vmm http://your-vllm:8000/metrics
 - ⚡ **Zero external Python dependencies** — Standard library only
 - 🐳 **Per-engine breakdown** — Individual engine status table and chart
 
-## Quick Start
+## 🚀 Installation
+
+**Recommended — [uv](https://docs.astral.sh/uv/):**
 
 ```bash
-# Install
-pip install vllm-metrics-monitor
+uv tool install vllm-metrics-monitor
+```
 
-# Launch (point to your vLLM metrics endpoint)
+**Or with pip:**
+
+```bash
+pip install vllm-metrics-monitor
+```
+
+## 📖 Usage
+
+```bash
+# Start monitoring
 vmm http://your-vllm:8000/metrics
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
-
-## Usage
 
 ```
 vmm [URL] [OPTIONS]
@@ -62,24 +75,18 @@ vmm http://vllm-server:8000/metrics --reset
 vmm http://vllm-server:8000/metrics --retention 72 --db /data/vmm.db
 ```
 
-## Architecture
+## 🏗️ Architecture
 
-```
-┌─────────────┐    scrape     ┌──────────────────────────────────────┐
-│  vLLM        │ ───────────► │  vmm                                 │
-│  /metrics    │   every 3s   │  ├── Scraper thread (collector)       │
-│              │              │  ├── SQLite storage (~/.vmm/data.db)  │
-│              │              │  └── HTTP server (API + static)       │
-└─────────────┘              └──────────┬───────────────────────────┘
-                                        │  JSON API
-                                        ▼
-                              ┌────────────────────┐
-                              │  Browser            │
-                              │  Chart.js dashboard │
-                              └────────────────────┘
+```mermaid
+graph LR
+    A[vLLM /metrics] -->|scrape every 3s| B[vmm]
+    B --> C[Scraper Thread]
+    C --> D[(SQLite<br/>~/.vmm/data.db)]
+    B --> E[HTTP Server]
+    E -->|JSON API| F[Browser<br/>Chart.js Dashboard]
 ```
 
-## API
+## 🔌 API
 
 | Endpoint | Description |
 |---|---|
@@ -87,7 +94,7 @@ vmm http://vllm-server:8000/metrics --retention 72 --db /data/vmm.db
 | `GET /api/current` | Latest metrics snapshot with computed rates |
 | `GET /api/history?minutes=N` | Time-series data for the last N minutes |
 
-## Monitored Metrics
+## 📈 Monitored Metrics
 
 | Metric | Source | Type |
 |---|---|---|
@@ -103,7 +110,7 @@ vmm http://vllm-server:8000/metrics --retention 72 --db /data/vmm.db
 | E2E Latency | `e2e_request_latency_seconds` | Histogram avg |
 | Uptime | `process_start_time_seconds` | Gauge |
 
-## Development
+## 🛠️ Development
 
 ```bash
 git clone https://github.com/zjxszzzcb/vllm-metrics-monitor.git
