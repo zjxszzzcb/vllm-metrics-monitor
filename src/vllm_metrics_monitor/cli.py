@@ -4,6 +4,8 @@ import argparse
 import logging
 import os
 
+from importlib.metadata import version as pkg_version
+
 from . import collector, server
 
 # Default db path: ~/.vmm/data.db
@@ -54,7 +56,16 @@ def main():
         action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--version", "-v",
+        action="store_true",
+        help="Show version and exit",
+    )
     args = parser.parse_args()
+
+    if args.version:
+        print(f"vmm {pkg_version('vllm-metrics-monitor')}")
+        return
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
