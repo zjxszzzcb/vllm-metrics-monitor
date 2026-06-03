@@ -224,7 +224,7 @@
   <h1 style="display:flex;align-items:baseline;gap:10px">
     <span class="status-dot" id="statusDot"></span>
     vLLM Metrics Dashboard
-    <span style="font-size:12px;color:var(--text-dim);font-weight:400;margin-top:auto">v0.1.0</span>
+    <span style="font-size:12px;color:var(--text-dim);font-weight:400;margin-top:auto">v0.2.0</span>
   </h1>
   <div class="header-right">
     <span class="last-update" id="lastUpdate">Connecting...</span>
@@ -476,9 +476,39 @@ function initCharts() {
   });
 }
 
-function updateChart(chart, timestamps, values) {
+function updateChart(chart, timestamps, values, maxValues) {
   if (!chart || !timestamps || !values) return;
   chart.data.datasets[0].data = tsToPoints(timestamps, values);
+
+  // Ensure dataset[1] (max) exists
+  while (chart.data.datasets.length < 2) {
+    chart.data.datasets.push({
+      borderWidth: 1,
+      pointRadius: 0,
+      tension: chart.data.datasets[0].tension,
+      fill: false,
+      data: [],
+    });
+  }
+
+  chart.data.datasets[0].label = maxValues ? 'mean' : chart.data.datasets[0].label;
+  chart.data.datasets[1].data = maxValues ? tsToPoints(timestamps, maxValues) : [];
+  chart.data.datasets[1].label = 'max';
+  // Derive max color from base color: shift hue toward red
+  const base = chart.data.datasets[0].borderColor;
+  const redTones = {
+    '#6366f1': '#c084fc',  // purple → lavender-red
+    '#eab308': '#ffffffaa',  // yellow → white
+    '#22c55e': '#ef4444',  // green → red
+    '#3b82f6': '#f472b6',  // blue → pink-red
+    '#f97316': '#ef4444',  // orange → red
+    '#ec4899': '#e11d48',  // pink → deep rose
+  };
+  chart.data.datasets[1].borderColor = redTones[base] || '#ef4444';
+  // Show legend when max line exists
+  chart.options.plugins.legend = maxValues
+    ? { display: true, labels: { color: '#888', boxWidth: 12, padding: 12 } }
+    : { display: false };
   chart.update('none');
 }
 
@@ -526,9 +556,18 @@ async function fetchHistory() {
     const data = await resp.json();
     if (!data || !data.timestamps || data.timestamps.length === 0) return;
 
-    updateChart(charts.running, data.timestamps, data.num_requests_running);
-    updateChart(charts.waiting, data.timestamps, data.num_requests_waiting);
-    updateChart(charts.rps, data.timestamps, data.requests_per_second);
+    const dmax = data.max || {};
+
+    function vMul(arr, factor) {
+      return arr ? arr.map(v => v * factor) : null;
+    }
+
+    updateChart(charts.running, data.timestamps, data.num_requests_running,
+      dmax.num_requests_running, null);
+    updateChart(charts.waiting, data.timestamps, data.num_requests_waiting,
+      dmax.num_requests_waiting, null);
+    updateChart(charts.rps, data.timestamps, data.requests_per_second,
+      dmax.requests_per_second, null);
     updateChart(charts.tps, data.timestamps, data.tokens_per_second);
     updateChart(charts.inputTps, data.timestamps, data.input_tokens_per_second);
     updateChart(charts.kv, data.timestamps, data.kv_cache_usage_perc.map(v => v * 100));

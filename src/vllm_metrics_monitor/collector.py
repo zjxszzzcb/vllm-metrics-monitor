@@ -286,19 +286,20 @@ def start_scraper():
 
 
 def _downsample(timestamps, value_arrays, max_points):
-    """Downsample parallel time-series arrays by averaging bins.
+    """Downsample parallel time-series arrays by binning.
 
-    Groups consecutive points into bins of size (n / max_points) and
-    computes the average timestamp and value for each bin.
-    Returns (timestamps, value_arrays) unchanged if n <= max_points.
+    Groups consecutive points into bins of size (n / max_points).
+    Returns (timestamps, mean_arrays, max_arrays).
+    Returns (timestamps, value_arrays, None) if n <= max_points.
     """
     n = len(timestamps)
     if n <= max_points:
-        return timestamps, value_arrays
+        return timestamps, value_arrays, None
 
     bin_size = n / max_points
     out_ts = []
-    out_arrays = [[] for _ in value_arrays]
+    out_mean = [[] for _ in value_arrays]
+    out_max = [[] for _ in value_arrays]
 
     i = 0
     for b in range(max_points):
@@ -311,10 +312,12 @@ def _downsample(timestamps, value_arrays, max_points):
         count = end - i
         out_ts.append(sum(timestamps[i:end]) / count)
         for j, arr in enumerate(value_arrays):
-            out_arrays[j].append(sum(arr[i:end]) / count)
+            s = arr[i:end]
+            out_mean[j].append(sum(s) / count)
+            out_max[j].append(max(s))
         i = end
 
-    return out_ts, out_arrays
+    return out_ts, out_mean, out_max
 
 
 def query_history(minutes: int, max_points: int = 300) -> dict:
@@ -376,15 +379,25 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
         prev = r
 
     # Downsample main metrics if needed
+    downsampled = False
+    ds_max = {}
     if max_points > 0 and len(timestamps) > max_points:
         all_arrays = [running, waiting, kv, req_rate, tok_rate, input_tok_rate,
                       cache_hit_rate, ttft_avg, itl_avg, e2e_avg]
-        timestamps, all_arrays = _downsample(timestamps, all_arrays, max_points)
+        names = ["num_requests_running", "num_requests_waiting", "kv_cache_usage_perc",
+                 "requests_per_second", "tokens_per_second", "input_tokens_per_second",
+                 "cache_hit_rate", "ttft_avg", "itl_avg", "e2e_avg"]
+        timestamps, all_arrays, ds_max_list = _downsample(
+            timestamps, all_arrays, max_points
+        )
         running, waiting, kv = all_arrays[0], all_arrays[1], all_arrays[2]
         req_rate, tok_rate, input_tok_rate = all_arrays[3], all_arrays[4], all_arrays[5]
         cache_hit_rate, ttft_avg, itl_avg, e2e_avg = (
             all_arrays[6], all_arrays[7], all_arrays[8], all_arrays[9]
         )
+        for idx, name in enumerate(names):
+            ds_max[name] = ds_max_list[idx]
+        downsampled = True
 
     # Per-engine history
     engine_history = {}
@@ -409,10 +422,11 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
             eh = engine_history[eid]
             if len(eh["timestamps"]) > max_points:
                 eng_arrays = [eh["running"], eh["waiting"], eh["kv_cache"]]
-                eh["timestamps"], eng_arrays = _downsample(
+                eh["timestamps"], eng_arrays, eng_max = _downsample(
                     eh["timestamps"], eng_arrays, max_points
                 )
                 eh["running"], eh["waiting"], eh["kv_cache"] = eng_arrays
+                eh["running_max"] = eng_max[0]
 
     conn.close()
 
@@ -429,6 +443,8 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
         "itl_avg": itl_avg,
         "e2e_avg": e2e_avg,
         "engine_history": engine_history,
+        "downsampled": downsampled,
+        **({"max": ds_max} if downsampled else {}),
     }
 
 
