@@ -87,6 +87,39 @@
     color: white;
   }
   .time-range button:hover:not(.active) { color: var(--text); }
+  .toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: var(--text-dim);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+  }
+  .toggle-btn.active { color: var(--accent); border-color: var(--accent); }
+  .toggle-btn .toggle-track {
+    width: 32px; height: 16px;
+    border-radius: 8px;
+    background: var(--border);
+    position: relative;
+    transition: background 0.2s;
+  }
+  .toggle-btn.active .toggle-track { background: var(--accent); }
+  .toggle-track::after {
+    content: '';
+    position: absolute;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--text);
+    top: 2px; left: 2px;
+    transition: transform 0.2s;
+  }
+  .toggle-btn.active .toggle-track::after { transform: translateX(16px); }
   .last-update {
     font-size: 12px;
     color: var(--text-dim);
@@ -196,10 +229,17 @@
   <div class="header-right">
     <span class="last-update" id="lastUpdate">Connecting...</span>
     <div class="time-range">
-      <button data-minutes="15">15m</button>
-      <button data-minutes="60" class="active">1h</button>
-      <button data-minutes="360">6h</button>
+      <button data-minutes="30">30m</button>
+      <button data-minutes="120" class="active">2h</button>
+      <button data-minutes="480">8h</button>
       <button data-minutes="1440">24h</button>
+      <button data-minutes="4320">3d</button>
+      <button data-minutes="10080">7d</button>
+      <button data-minutes="43200">30d</button>
+    </div>
+    <div class="toggle-btn active" id="smoothToggle">
+      <div class="toggle-track"></div>
+      <span>Smooth</span>
     </div>
   </div>
 </div>
@@ -359,7 +399,7 @@ const chartDefaults = {
   },
   elements: {
     point: { radius: 0, hoverRadius: 3 },
-    line: { tension: 0.3, borderWidth: 2 },
+    line: { tension: 0.4, borderWidth: 2 },
   },
 };
 
@@ -389,7 +429,7 @@ function tsToPoints(timestamps, values) {
 }
 
 // --- State ---
-let selectedMinutes = 60;
+let selectedMinutes = 120;
 let charts = {};
 let connected = false;
 
@@ -562,6 +602,18 @@ async function fetchEngineTable() {
     console.error('Failed to fetch engine table:', e);
   }
 }
+
+// --- Smooth Toggle ---
+let smoothEnabled = true;
+document.getElementById('smoothToggle').addEventListener('click', function() {
+  smoothEnabled = !smoothEnabled;
+  this.classList.toggle('active', smoothEnabled);
+  const tension = smoothEnabled ? 0.4 : 0;
+  Object.values(charts).forEach(chart => {
+    chart.data.datasets.forEach(ds => { ds.tension = tension; });
+    chart.update('none');
+  });
+});
 
 // --- Time Range Buttons ---
 document.querySelectorAll('.time-range button').forEach(btn => {

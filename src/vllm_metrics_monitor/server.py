@@ -21,13 +21,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/current":
             self._serve_json(collector.query_current())
         elif self.path.startswith("/api/history"):
-            minutes = 60
-            if "minutes=" in self.path:
-                try:
-                    minutes = int(self.path.split("minutes=")[1].split("&")[0])
-                except (ValueError, IndexError):
-                    pass
-            self._serve_json(collector.query_history(minutes))
+            minutes = 120
+            max_points = 180
+            query = self.path.split("?", 1)[-1] if "?" in self.path else ""
+            for part in query.split("&"):
+                if "=" not in part:
+                    continue
+                k, v = part.split("=", 1)
+                if k == "minutes":
+                    try:
+                        minutes = int(v)
+                    except ValueError:
+                        pass
+                elif k == "max_points":
+                    try:
+                        max_points = int(v)
+                    except ValueError:
+                        pass
+            self._serve_json(collector.query_history(minutes, max_points))
         else:
             self._serve_static(self.path)
 

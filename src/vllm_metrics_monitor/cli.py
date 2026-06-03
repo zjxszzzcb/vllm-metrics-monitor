@@ -36,8 +36,8 @@ def main():
     parser.add_argument(
         "--retention",
         type=int,
-        default=24,
-        help="Data retention in hours (default: 24)",
+        default=720,
+        help="Data retention in hours (default: 720, i.e. 30 days)",
     )
     parser.add_argument(
         "--db",
