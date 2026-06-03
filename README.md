@@ -15,8 +15,9 @@ Real-time monitoring dashboard for [vLLM](https://github.com/vllm-project/vllm) 
 
 - 📊 **9 real-time time-series charts** — Running/Waiting Requests, Requests/s, Output/Input Tokens/s, KV Cache, Cache Hit Rate, Latency (TTFT/ITL/E2E), Per-Engine Requests
 - 🃏 **Live status cards** — Key metrics at a glance
-- 🕐 **Selectable time range** — 15m / 1h / 6h / 24h
-- 💾 **SQLite persistence** — Data stored at `~/.vmm/data.db`, survives restarts
+- 🕐 **Selectable time range** — 30m / 2h / 8h / 24h / 3d / 7d / 30d
+- 📉 **Server-side downsampling** — Automatic data aggregation for large time ranges with max line visualization
+- 💾 **SQLite persistence** — Data stored at `~/.vmm/data.db`, survives restarts, 30-day default retention
 - ⚡ **Zero external Python dependencies** — Standard library only
 - 🐳 **Per-engine breakdown** — Individual engine status table and chart
 
@@ -53,7 +54,7 @@ Positional:
 Options:
   -p, --port PORT       Dashboard HTTP port (default: 8080)
   -i, --interval SEC    Scrape interval in seconds (default: 3)
-  --retention HOURS     Data retention period (default: 24)
+  --retention HOURS     Data retention period (default: 720, i.e. 30 days)
   --db PATH             SQLite database path (default: ~/.vmm/data.db)
   --reset               Delete existing database and start fresh
   --debug               Enable debug logging
@@ -92,7 +93,8 @@ graph LR
 |---|---|
 | `GET /` | Dashboard UI |
 | `GET /api/current` | Latest metrics snapshot with computed rates |
-| `GET /api/history?minutes=N` | Time-series data for the last N minutes |
+| `GET /api/history?minutes=N` | Time-series data for the last N minutes (auto-downsampled, max 300 points) |
+| `GET /api/history?minutes=N&max_points=M` | Same, with custom max points |
 
 ## 📈 Monitored Metrics
 

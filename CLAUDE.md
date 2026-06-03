@@ -24,17 +24,19 @@ uv run vmm http://vllm:8000/metrics -p 9090 -i 5 --retention 72
 uv build
 ```
 
-No test suite exists yet. Manual testing via the web UI at `http://localhost:8080` or API endpoints (`/api/current`, `/api/history?minutes=60`).
+No test suite exists yet. Manual testing via the web UI at `http://localhost:8080` or API endpoints (`/api/current`, `/api/history?minutes=120`).
 
 ## Architecture
 
 ```
 src/vllm_metrics_monitor/
 ├── cli.py        # Entry point, argument parsing, orchestrator
-├── collector.py  # Prometheus scraper + SQLite storage
+├── collector.py  # Prometheus scraper + SQLite storage + downsampling
 ├── server.py     # HTTP server + JSON API endpoints
 └── static/
-    └── index.html  # Self-contained dashboard (HTML/CSS/JS + Chart.js CDN)
+    ├── index.html    # Self-contained dashboard (HTML/CSS/JS + Chart.js CDN)
+    ├── favicon.svg   # SVG favicon (primary, used by modern browsers)
+    └── favicon.png   # PNG favicon (fallback)
 ```
 
 **Dual-threaded design:**
@@ -42,15 +44,18 @@ src/vllm_metrics_monitor/
 - Main thread: runs HTTP server serving the dashboard and API
 - Separate cleanup daemon thread: hourly removes data beyond retention period
 
-**Data flow:** vLLM `/metrics` → regex parser → SQLite (WAL mode) → JSON API → Chart.js dashboard (3s polling)
+**Data flow:** vLLM `/metrics` → regex parser → SQLite (WAL mode) → rate calculation → downsampling → JSON API → Chart.js dashboard (3s polling)
 
 ## Key Patterns
 
 - **SQLite with WAL mode** for concurrent reads during writes; two tables (`metrics` for global, `engine_metrics` per-engine)
 - **Rate calculations** are computed at query time (delta / time_delta), not stored
+- **Server-side downsampling** (`_downsample` in collector.py): when raw points exceed `max_points` (default 300), groups consecutive points into bins and computes mean + max per bin; returns `downsampled: true` and `max` dict in response
+- **Default retention** is 720 hours (30 days); default scrape interval is 3 seconds
 - **Graceful degradation** on scrape failure — returns last known snapshot with gauges zeroed
 - **Path traversal protection** in static file serving
 - **Frontend** is a single `index.html` with vanilla JS, no build step; uses Chart.js 4.4.7 from CDN
+- **Time ranges**: 30m / 2h / 8h / 24h / 3d / 7d / 30d with smooth toggle (Chart.js tension)
 
 ## Build & Packaging
 
