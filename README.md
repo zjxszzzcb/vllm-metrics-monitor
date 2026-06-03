@@ -1,48 +1,33 @@
 <div align="center">
 
-# ⚡ vLLM Metrics Monitor
+# <img src="src/vllm_metrics_monitor/static/favicon.svg" width="28"> vLLM Metrics Monitor
 
-Real-time monitoring dashboard for [vLLM](https://github.com/vllm-project/vllm) inference servers.
+**One command to monitor your vLLM server metrics**
 
 [![PyPI](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 </div>
 
+**vLLM Metrics Monitor (`vmm`)** is a lightweight dashboard that scrapes Prometheus metrics from vLLM, persists to SQLite, and serves a real-time web UI. Zero external dependencies — pure Python standard library.
+
 ![Dashboard Preview](docs/screenshot.webp)
 
-## ✨ Features
-
-- 📊 **9 real-time time-series charts** — Running/Waiting Requests, Requests/s, Output/Input Tokens/s, KV Cache, Cache Hit Rate, Latency (TTFT/ITL/E2E), Per-Engine Requests
-- 🃏 **Live status cards** — Key metrics at a glance
-- 🕐 **Selectable time range** — 30m / 2h / 8h / 24h / 3d / 7d / 30d
-- 📉 **Server-side downsampling** — Automatic data aggregation for large time ranges with max line visualization
-- 💾 **SQLite persistence** — Data stored at `~/.vmm/data.db`, survives restarts, 30-day default retention
-- ⚡ **Zero external Python dependencies** — Standard library only
-- 🐳 **Per-engine breakdown** — Individual engine status table and chart
-
-## 🚀 Installation
-
-**Recommended — [uv](https://docs.astral.sh/uv/):**
+## 🚀 Quick Start
 
 ```bash
+# Install with uv
 uv tool install vllm-metrics-monitor
-```
 
-**Or with pip:**
+# Or install with pip: `pip install vllm-metrics-monitor`
 
-```bash
-pip install vllm-metrics-monitor
-```
-
-## 📖 Usage
-
-```bash
-# Start monitoring
+# Launch dashboard
 vmm http://your-vllm:8000/metrics
 ```
 
-Open [http://localhost:8080](http://localhost:8080) in your browser.
+Open [http://localhost:8080](http://localhost:8080) — that's it.
+
+## 📖 Usage
 
 ```
 vmm [URL] [OPTIONS]
@@ -63,16 +48,8 @@ Options:
 ### Examples
 
 ```bash
-# Basic
-vmm http://vllm-server:8000/metrics
-
-# Custom port and slower scrape
 vmm http://vllm-server:8000/metrics -p 9090 -i 5
-
-# Fresh start
 vmm http://vllm-server:8000/metrics --reset
-
-# Longer retention with custom db path
 vmm http://vllm-server:8000/metrics --retention 72 --db /data/vmm.db
 ```
 
@@ -86,15 +63,6 @@ graph LR
     B --> E[HTTP Server]
     E -->|JSON API| F[Browser<br/>Chart.js Dashboard]
 ```
-
-## 🔌 API
-
-| Endpoint | Description |
-|---|---|
-| `GET /` | Dashboard UI |
-| `GET /api/current` | Latest metrics snapshot with computed rates |
-| `GET /api/history?minutes=N` | Time-series data for the last N minutes (auto-downsampled, max 300 points) |
-| `GET /api/history?minutes=N&max_points=M` | Same, with custom max points |
 
 ## 📈 Monitored Metrics
 
@@ -111,17 +79,6 @@ graph LR
 | ITL | `inter_token_latency_seconds` | Histogram avg |
 | E2E Latency | `e2e_request_latency_seconds` | Histogram avg |
 | Uptime | `process_start_time_seconds` | Gauge |
-
-## 🛠️ Development
-
-```bash
-git clone https://github.com/zjxszzzcb/vllm-metrics-monitor.git
-cd vllm-metrics-monitor
-uv venv && uv pip install -e .
-
-# Run in dev mode
-vmm http://your-vllm:8000/metrics --debug
-```
 
 ## License
 
