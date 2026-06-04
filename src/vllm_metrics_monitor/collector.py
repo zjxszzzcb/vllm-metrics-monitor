@@ -345,15 +345,12 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
 
         if prev and (ts - prev["timestamp"]) > 0:
             dt = ts - prev["timestamp"]
-            req_rate.append(
-                (r["request_success_total"] - prev["request_success_total"]) / dt
-            )
-            tok_rate.append(
-                (r["generation_tokens_total"] - prev["generation_tokens_total"]) / dt
-            )
-            input_tok_rate.append(
-                (r["prompt_tokens_total"] - prev["prompt_tokens_total"]) / dt
-            )
+            d_req = r["request_success_total"] - prev["request_success_total"]
+            d_tok = r["generation_tokens_total"] - prev["generation_tokens_total"]
+            d_input = r["prompt_tokens_total"] - prev["prompt_tokens_total"]
+            req_rate.append(max(0, d_req / dt))
+            tok_rate.append(max(0, d_tok / dt))
+            input_tok_rate.append(max(0, d_input / dt))
             delta_prompt = r["prompt_tokens_total"] - prev["prompt_tokens_total"]
             delta_cached = r["prompt_tokens_cached_total"] - prev["prompt_tokens_cached_total"]
             cache_hit_rate.append(
@@ -467,9 +464,12 @@ def query_current() -> dict | None:
     if prev_row:
         dt = row["timestamp"] - prev_row["timestamp"]
         if dt > 0:
-            req_rate = (row["request_success_total"] - prev_row["request_success_total"]) / dt
-            tok_rate = (row["generation_tokens_total"] - prev_row["generation_tokens_total"]) / dt
-            input_rate = (row["prompt_tokens_total"] - prev_row["prompt_tokens_total"]) / dt
+            d_req = row["request_success_total"] - prev_row["request_success_total"]
+            d_tok = row["generation_tokens_total"] - prev_row["generation_tokens_total"]
+            d_input = row["prompt_tokens_total"] - prev_row["prompt_tokens_total"]
+            req_rate = max(0, d_req / dt)
+            tok_rate = max(0, d_tok / dt)
+            input_rate = max(0, d_input / dt)
 
     pt = row["prompt_tokens_total"]
     ct = row["prompt_tokens_cached_total"]
