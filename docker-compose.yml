@@ -1,0 +1,12 @@
+services:
+  vmm:
+    build: .
+    container_name: vmm
+    network_mode: host
+    command: ["${METRICS_URL:-http://localhost:8000/metrics}"]
+    volumes:
+      - vmm-data:/root/.vmm
+    restart: unless-stopped
+
+volumes:
+  vmm-data:

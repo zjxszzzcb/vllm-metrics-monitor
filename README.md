@@ -53,6 +53,19 @@ vmm http://vllm-server:8000/metrics --reset
 vmm http://vllm-server:8000/metrics --retention 72 --db /data/vmm.db
 ```
 
+### Docker
+
+```bash
+# Build
+docker build -t vmm .
+
+# Run
+docker run -d --network host vmm http://localhost:8000/metrics
+
+# Or use docker compose
+METRICS_URL=http://192.168.1.100:8000/metrics docker compose up -d
+```
+
 ## 🏗️ Architecture
 
 ```mermaid
