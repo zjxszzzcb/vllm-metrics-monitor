@@ -5,7 +5,7 @@ import logging
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from . import collector
+from . import collector, __version__
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/" or self.path == "/index.html":
-            self._serve_file("index.html", "text/html")
+            self._serve_file("index.html", "text/html", template_vars={"VERSION": __version__})
         elif self.path == "/api/current":
             self._serve_json(collector.query_current())
         elif self.path.startswith("/api/history"):
@@ -62,16 +62,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         self._send_file(filepath, content_types.get(ext, "application/octet-stream"))
 
-    def _serve_file(self, filename: str, content_type: str):
+    def _serve_file(self, filename: str, content_type: str, template_vars: dict | None = None):
         filepath = os.path.realpath(os.path.join(STATIC_DIR, filename))
         if not filepath.startswith(STATIC_DIR + os.sep) or not os.path.isfile(filepath):
             self.send_error(404)
             return
-        self._send_file(filepath, content_type)
+        self._send_file(filepath, content_type, template_vars=template_vars)
 
-    def _send_file(self, filepath: str, content_type: str):
+    def _send_file(self, filepath: str, content_type: str, template_vars: dict | None = None):
         with open(filepath, "rb") as f:
             data = f.read()
+        if template_vars:
+            text = data.decode("utf-8")
+            for key, value in template_vars.items():
+                text = text.replace(f"{{{{ {key} }}}}", value)
+            data = text.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
