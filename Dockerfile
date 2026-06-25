@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
-RUN pip install vllm-metrics-monitor
+WORKDIR /app
+COPY dist/*.whl ./
+RUN pip install $(ls -t *.whl | head -1) && rm *.whl
 
 EXPOSE 8080
 

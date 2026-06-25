@@ -159,9 +159,15 @@
   /* Charts */
   .charts-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 16px;
     margin-bottom: 24px;
+  }
+  @media (max-width: 1100px) {
+    .charts-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 720px) {
+    .charts-grid { grid-template-columns: 1fr; }
   }
   .chart-panel {
     background: var(--card);
@@ -255,34 +261,38 @@
     <div class="value" id="cardWaiting">-</div>
   </div>
   <div class="card">
-    <div class="label">KV Cache</div>
-    <div class="value" id="cardKV">-</div>
-    <div class="sub" id="cardKVSub"></div>
-  </div>
-  <div class="card">
-    <div class="label">Requests/s</div>
-    <div class="value" id="cardRPS">-</div>
-  </div>
-  <div class="card">
     <div class="label">Output Tokens/s</div>
     <div class="value" id="cardTPS">-</div>
   </div>
   <div class="card">
-    <div class="label">Cache Hit Rate</div>
-    <div class="value" id="cardHitRate">-</div>
+    <div class="label">Input Tokens/s</div>
+    <div class="value" id="cardInputTPS">-</div>
   </div>
   <div class="card">
-    <div class="label">Total Requests</div>
-    <div class="value" id="cardTotalReq">-</div>
+    <div class="label">Queue Time</div>
+    <div class="value" id="cardQueueTime">-</div>
+  </div>
+  <div class="card">
+    <div class="label">Avg Prompt Len</div>
+    <div class="value" id="cardAvgPromptLen">-</div>
+  </div>
+  <div class="card">
+    <div class="label">Avg Gen Len</div>
+    <div class="value" id="cardAvgGenLen">-</div>
   </div>
   <div class="card">
     <div class="label">Uptime</div>
     <div class="value" id="cardUptime">-</div>
   </div>
+  <div class="card">
+    <div class="label">Failure Rate</div>
+    <div class="value" id="cardFailureRate">-</div>
+  </div>
 </div>
 
 <!-- Charts -->
 <div class="charts-grid">
+  <!-- Row 1: Load -->
   <div class="chart-panel">
     <h3>Running Requests</h3>
     <div class="chart-container"><canvas id="chartRunning"></canvas></div>
@@ -292,32 +302,47 @@
     <div class="chart-container"><canvas id="chartWaiting"></canvas></div>
   </div>
   <div class="chart-panel">
-    <h3>Requests / second</h3>
-    <div class="chart-container"><canvas id="chartRPS"></canvas></div>
+    <h3>Per-Engine Running Requests</h3>
+    <div class="chart-container"><canvas id="chartEngineRunning"></canvas></div>
   </div>
+  <!-- Row 2: Throughput -->
   <div class="chart-panel">
     <h3>Output Tokens / second</h3>
-    <div class="chart-container"><canvas id="chartTPS"></canvas></div>
+    <div class="chart-container"><canvas id="chartTokens"></canvas></div>
   </div>
   <div class="chart-panel">
     <h3>Input Tokens / second</h3>
-    <div class="chart-container"><canvas id="chartInputTPS"></canvas></div>
+    <div class="chart-container"><canvas id="chartInputTokens"></canvas></div>
   </div>
   <div class="chart-panel">
     <h3>KV Cache Usage (%)</h3>
     <div class="chart-container"><canvas id="chartKV"></canvas></div>
   </div>
+  <!-- Row 3: Efficiency / Quality -->
   <div class="chart-panel">
     <h3>Cache Hit Rate (%)</h3>
     <div class="chart-container"><canvas id="chartHitRate"></canvas></div>
   </div>
   <div class="chart-panel">
+    <h3>Failure Rate (%)</h3>
+    <div class="chart-container"><canvas id="chartFailureRate"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Queue Time (s)</h3>
+    <div class="chart-container"><canvas id="chartQueueTime"></canvas></div>
+  </div>
+  <!-- Row 4: Performance -->
+  <div class="chart-panel">
     <h3>Latency (TTFT / ITL / E2E)</h3>
     <div class="chart-container"><canvas id="chartLatency"></canvas></div>
   </div>
   <div class="chart-panel">
-    <h3>Per-Engine Running Requests</h3>
-    <div class="chart-container"><canvas id="chartEngineRunning"></canvas></div>
+    <h3>Avg Prompt Length</h3>
+    <div class="chart-container"><canvas id="chartAvgPromptLen"></canvas></div>
+  </div>
+  <div class="chart-panel">
+    <h3>Avg Generation Length</h3>
+    <div class="chart-container"><canvas id="chartAvgGenLen"></canvas></div>
   </div>
 </div>
 
@@ -368,7 +393,13 @@ function fmtTime(ts) {
 
 // --- Chart Setup ---
 const CHART_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#22c55e', '#eab308', '#f97316'];
-const ENGINE_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#22c55e'];
+const ENGINE_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#22c55e', '#f97316', '#ec4899', '#a855f7', '#14b8a6'];
+
+function getEngineColor(index) {
+  if (index < ENGINE_COLORS.length) return ENGINE_COLORS[index];
+  const hue = ((index - ENGINE_COLORS.length) * 137.5) % 360;
+  return `hsl(${hue}, 70%, 60%)`;
+}
 
 const chartDefaults = {
   responsive: true,
@@ -440,14 +471,11 @@ function initCharts() {
   charts.waiting = makeChart('chartWaiting', [
     { label: 'Total', borderColor: '#eab308', backgroundColor: 'rgba(234,179,8,0.1)', fill: true, data: [] },
   ]);
-  charts.rps = makeChart('chartRPS', [
-    { label: 'req/s', borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)', fill: true, data: [] },
+  charts.tokens = makeChart('chartTokens', [
+    { label: 'Output', borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, data: [] },
   ]);
-  charts.tps = makeChart('chartTPS', [
-    { label: 'tokens/s', borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, data: [] },
-  ]);
-  charts.inputTps = makeChart('chartInputTPS', [
-    { label: 'tokens/s', borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, data: [] },
+  charts.inputTokens = makeChart('chartInputTokens', [
+    { label: 'Input', borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, data: [] },
   ]);
   charts.kv = makeChart('chartKV', [
     { label: 'Max %', borderColor: '#ec4899', backgroundColor: 'rgba(236,72,153,0.1)', fill: true, data: [] },
@@ -457,6 +485,13 @@ function initCharts() {
     { label: 'Hit Rate %', borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.1)', fill: true, data: [] },
   ], { scales: { y: { ...chartDefaults.scales.y, max: 100,
     ticks: { color: '#888', callback: v => v + '%' } } } });
+  charts.failureRate = makeChart('chartFailureRate', [
+    { label: 'Failure %', borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true, data: [] },
+  ], { scales: { y: { ...chartDefaults.scales.y, max: 100,
+    ticks: { color: '#888', callback: v => v + '%' } } } });
+  charts.queueTime = makeChart('chartQueueTime', [
+    { label: 'Queue Time (s)', borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.1)', fill: true, data: [] },
+  ]);
   charts.latency = makeChart('chartLatency', [
     { label: 'TTFT (s)', borderColor: '#6366f1', data: [] },
     { label: 'ITL (ms)', borderColor: '#3b82f6', data: [] },
@@ -466,14 +501,15 @@ function initCharts() {
       ticks: { color: '#888', callback: v => v >= 1 ? v.toFixed(1) + 's' : (v * 1000).toFixed(0) + 'ms' } } },
     plugins: { legend: { display: true, labels: { color: '#888', boxWidth: 12, padding: 12 } } },
   });
-  charts.engineRunning = makeChart('chartEngineRunning', [
-    { label: 'Engine 0', borderColor: ENGINE_COLORS[0], data: [] },
-    { label: 'Engine 1', borderColor: ENGINE_COLORS[1], data: [] },
-    { label: 'Engine 2', borderColor: ENGINE_COLORS[2], data: [] },
-    { label: 'Engine 3', borderColor: ENGINE_COLORS[3], data: [] },
-  ], {
+  charts.engineRunning = makeChart('chartEngineRunning', [], {
     plugins: { legend: { display: true, labels: { color: '#888', boxWidth: 12, padding: 12 } } },
   });
+  charts.avgPromptLen = makeChart('chartAvgPromptLen', [
+    { label: 'tokens', borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.1)', fill: true, data: [] },
+  ]);
+  charts.avgGenLen = makeChart('chartAvgGenLen', [
+    { label: 'tokens', borderColor: '#14b8a6', backgroundColor: 'rgba(20,184,166,0.1)', fill: true, data: [] },
+  ]);
 }
 
 function updateChart(chart, timestamps, values, maxValues) {
@@ -503,6 +539,8 @@ function updateChart(chart, timestamps, values, maxValues) {
     '#3b82f6': '#f472b6',  // blue → pink-red
     '#f97316': '#ef4444',  // orange → red
     '#ec4899': '#e11d48',  // pink → deep rose
+    '#a855f7': '#f472b6',  // violet mean → pink max
+    '#14b8a6': '#22d3ee',  // teal mean → cyan max
   };
   chart.data.datasets[1].borderColor = redTones[base] || '#ef4444';
   // Show legend when max line exists
@@ -534,13 +572,15 @@ async function fetchCurrent() {
 
     document.getElementById('cardRunning').textContent = fmtNum(data.num_requests_running);
     document.getElementById('cardWaiting').textContent = fmtNum(data.num_requests_waiting);
-    document.getElementById('cardKV').textContent = data.kv_cache_usage_perc.toFixed(2) + '%';
-    document.getElementById('cardKVSub').textContent = 'Peak across engines';
-    document.getElementById('cardRPS').textContent = fmtNum(data.requests_per_second, 1);
     document.getElementById('cardTPS').textContent = fmtNum(data.tokens_per_second, 0);
-    document.getElementById('cardHitRate').textContent = data.cache_hit_rate.toFixed(1) + '%';
-    document.getElementById('cardTotalReq').textContent = fmtNum(data.request_success_total);
+    document.getElementById('cardInputTPS').textContent = fmtNum(data.input_tokens_per_second, 0);
+    document.getElementById('cardQueueTime').textContent = data.queue_time_avg >= 1
+      ? data.queue_time_avg.toFixed(2) + 's'
+      : (data.queue_time_avg * 1000).toFixed(0) + 'ms';
+    document.getElementById('cardAvgPromptLen').textContent = Math.round(data.avg_prompt_length).toLocaleString();
+    document.getElementById('cardAvgGenLen').textContent = Math.round(data.avg_generation_length).toLocaleString();
     document.getElementById('cardUptime').textContent = fmtUptime(data.uptime);
+    document.getElementById('cardFailureRate').textContent = data.failure_rate.toFixed(2) + '%';
     document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
   } catch (e) {
     connected = false;
@@ -562,37 +602,50 @@ async function fetchHistory() {
       return arr ? arr.map(v => v * factor) : null;
     }
 
+    // Row 1: Load
     updateChart(charts.running, data.timestamps, data.num_requests_running,
-      dmax.num_requests_running, null);
+      dmax.num_requests_running);
     updateChart(charts.waiting, data.timestamps, data.num_requests_waiting,
-      dmax.num_requests_waiting, null);
-    updateChart(charts.rps, data.timestamps, data.requests_per_second,
-      dmax.requests_per_second, null);
-    updateChart(charts.tps, data.timestamps, data.tokens_per_second);
-    updateChart(charts.inputTps, data.timestamps, data.input_tokens_per_second);
-    updateChart(charts.kv, data.timestamps, data.kv_cache_usage_perc.map(v => v * 100));
-    updateChart(charts.hitRate, data.timestamps, data.cache_hit_rate.map(v => v * 100));
-
-    // Latency: ITL is in seconds but we want to show it as ms in the tooltip
-    const ttftData = data.ttft_avg;
-    const itlData = data.itl_avg;
-    const e2eData = data.e2e_avg;
-    updateMultiChart(charts.latency, [
-      { timestamps: data.timestamps, values: ttftData },
-      { timestamps: data.timestamps, values: itlData },
-      { timestamps: data.timestamps, values: e2eData },
-    ]);
-
-    // Per-engine running requests
+      dmax.num_requests_waiting);
     const engHist = data.engine_history || {};
     const engineIds = Object.keys(engHist).sort((a, b) => a - b);
+    // Rebuild datasets if engine count changed
+    if (charts.engineRunning.data.datasets.length !== engineIds.length) {
+      charts.engineRunning.data.datasets = engineIds.map((eid, i) => ({
+        label: 'Engine ' + eid,
+        borderColor: getEngineColor(i),
+        backgroundColor: 'transparent',
+        data: [],
+        pointRadius: 0,
+        hoverRadius: 3,
+        tension: smoothEnabled ? 0.4 : 0,
+        borderWidth: 2,
+      }));
+    }
     const engineDatasets = engineIds.map(eid => ({
       timestamps: engHist[eid].timestamps,
       values: engHist[eid].running,
     }));
-    // Pad to 4 datasets if fewer engines
-    while (engineDatasets.length < 4) engineDatasets.push({ timestamps: [], values: [] });
     updateMultiChart(charts.engineRunning, engineDatasets);
+
+    // Row 2: Throughput
+    updateChart(charts.tokens, data.timestamps, data.tokens_per_second);
+    updateChart(charts.inputTokens, data.timestamps, data.input_tokens_per_second);
+    updateChart(charts.kv, data.timestamps, data.kv_cache_usage_perc.map(v => v * 100));
+
+    // Row 3: Efficiency / Quality
+    updateChart(charts.hitRate, data.timestamps, data.cache_hit_rate.map(v => v * 100));
+    updateChart(charts.failureRate, data.timestamps, data.failure_rate.map(v => v));
+    updateChart(charts.queueTime, data.timestamps, data.queue_time_avg);
+
+    // Row 4: Performance
+    updateMultiChart(charts.latency, [
+      { timestamps: data.timestamps, values: data.ttft_avg },
+      { timestamps: data.timestamps, values: data.itl_avg },
+      { timestamps: data.timestamps, values: data.e2e_avg },
+    ]);
+    updateChart(charts.avgPromptLen, data.timestamps, data.avg_prompt_length);
+    updateChart(charts.avgGenLen, data.timestamps, data.avg_generation_length);
   } catch (e) {
     console.error('Failed to fetch history:', e);
   }

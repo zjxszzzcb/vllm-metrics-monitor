@@ -28,6 +28,27 @@ def _get_db():
     return conn
 
 
+def _migrate_db(conn):
+    """Add missing columns to existing tables."""
+    migrations = [
+        ("metrics", "prompt_len_sum", "REAL"),
+        ("metrics", "prompt_len_count", "REAL"),
+        ("metrics", "gen_len_sum", "REAL"),
+        ("metrics", "gen_len_count", "REAL"),
+        ("metrics", "prompt_len_max", "REAL"),
+        ("metrics", "gen_len_max", "REAL"),
+        ("metrics", "abort_count", "REAL"),
+        ("metrics", "error_count", "REAL"),
+        ("metrics", "queue_time_sum", "REAL"),
+        ("metrics", "queue_time_count", "REAL"),
+    ]
+    for table, col, dtype in migrations:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {dtype}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
 def init_db():
     conn = _get_db()
     conn.executescript("""
@@ -42,7 +63,12 @@ def init_db():
             prompt_tokens_cached_total REAL,
             ttft_sum REAL, ttft_count REAL,
             itl_sum REAL, itl_count REAL,
-            e2e_sum REAL, e2e_count REAL
+            e2e_sum REAL, e2e_count REAL,
+            prompt_len_sum REAL, prompt_len_count REAL,
+            gen_len_sum REAL, gen_len_count REAL,
+            prompt_len_max REAL, gen_len_max REAL,
+            abort_count REAL, error_count REAL,
+            queue_time_sum REAL, queue_time_count REAL
         );
         CREATE TABLE IF NOT EXISTS engine_metrics (
             timestamp REAL,
@@ -55,6 +81,7 @@ def init_db():
             PRIMARY KEY (timestamp, engine_id)
         );
     """)
+    _migrate_db(conn)
     conn.commit()
     conn.close()
 
@@ -111,6 +138,33 @@ def _get_total(parsed: dict, metric: str) -> float:
     return sum(e["value"] for e in parsed.get(metric, []))
 
 
+def _parse_histogram_buckets(parsed: dict, metric: str) -> dict:
+    """Parse histogram buckets into {le_value: total_count_across_engines}."""
+    buckets = {}
+    for e in parsed.get(metric + "_bucket", []):
+        le = e["labels"].get("le", "")
+        if le == "+Inf":
+            continue
+        try:
+            le_val = float(le)
+        except ValueError:
+            continue
+        buckets[le_val] = buckets.get(le_val, 0) + e["value"]
+    return buckets
+
+
+def _estimate_histogram_max(current_buckets: dict, prev_buckets: dict | None) -> float:
+    """Find highest bucket whose count increased since last scrape."""
+    if not prev_buckets:
+        return 0
+    max_val = 0
+    for le_val, count in current_buckets.items():
+        prev_count = prev_buckets.get(le_val, 0)
+        if count > prev_count:
+            max_val = max(max_val, le_val)
+    return max_val
+
+
 # --- Collect & Store ---
 
 
@@ -135,6 +189,18 @@ def _fallback_snapshot() -> dict:
         "itl_count": prev["itl_count"] if prev else 0,
         "e2e_sum": prev["e2e_sum"] if prev else 0,
         "e2e_count": prev["e2e_count"] if prev else 0,
+        "prompt_len_sum": prev["prompt_len_sum"] if prev else 0,
+        "prompt_len_count": prev["prompt_len_count"] if prev else 0,
+        "gen_len_sum": prev["gen_len_sum"] if prev else 0,
+        "gen_len_count": prev["gen_len_count"] if prev else 0,
+        "prompt_len_max": prev["prompt_len_max"] if prev else 0,
+        "gen_len_max": prev["gen_len_max"] if prev else 0,
+        "abort_count": prev["abort_count"] if prev else 0,
+        "error_count": prev["error_count"] if prev else 0,
+        "queue_time_sum": prev["queue_time_sum"] if prev else 0,
+        "queue_time_count": prev["queue_time_count"] if prev else 0,
+        "prompt_buckets": prev.get("prompt_buckets") if prev else {},
+        "gen_buckets": prev.get("gen_buckets") if prev else {},
         "uptime": 0,
         "engines": [],
     }
@@ -188,6 +254,37 @@ def collect_metrics() -> dict | None:
     e2e_sum = _get_total(parsed, "vllm:e2e_request_latency_seconds_sum")
     e2e_count = _get_total(parsed, "vllm:e2e_request_latency_seconds_count")
 
+    prompt_len_sum = _get_total(parsed, "vllm:request_prompt_tokens_sum")
+    prompt_len_count = _get_total(parsed, "vllm:request_prompt_tokens_count")
+    gen_len_sum = _get_total(parsed, "vllm:request_generation_tokens_sum")
+    gen_len_count = _get_total(parsed, "vllm:request_generation_tokens_count")
+
+    abort_count = sum(
+        e["value"] for e in parsed.get("vllm:request_success_total", [])
+        if e["labels"].get("finished_reason") == "abort"
+    )
+    error_count = sum(
+        e["value"] for e in parsed.get("vllm:request_success_total", [])
+        if e["labels"].get("finished_reason") == "error"
+    )
+    queue_time_sum = _get_total(parsed, "vllm:request_queue_time_seconds_sum")
+    queue_time_count = _get_total(parsed, "vllm:request_queue_time_seconds_count")
+
+    prompt_buckets = _parse_histogram_buckets(parsed, "vllm:request_prompt_tokens")
+    gen_buckets = _parse_histogram_buckets(parsed, "vllm:request_generation_tokens")
+
+    prev_prompt_buckets = _last_snapshot.get("prompt_buckets") if _last_snapshot else None
+    prev_gen_buckets = _last_snapshot.get("gen_buckets") if _last_snapshot else None
+
+    # Detect counter reset for histograms (vLLM restarted)
+    if _last_snapshot and prompt_len_count < _last_snapshot.get("prompt_len_count", 0):
+        prev_prompt_buckets = None
+    if _last_snapshot and gen_len_count < _last_snapshot.get("gen_len_count", 0):
+        prev_gen_buckets = None
+
+    prompt_len_max = _estimate_histogram_max(prompt_buckets, prev_prompt_buckets)
+    gen_len_max = _estimate_histogram_max(gen_buckets, prev_gen_buckets)
+
     start_time = _get_total(parsed, "process_start_time_seconds")
     now = time.time()
 
@@ -206,6 +303,18 @@ def collect_metrics() -> dict | None:
         "itl_count": itl_count,
         "e2e_sum": e2e_sum,
         "e2e_count": e2e_count,
+        "prompt_len_sum": prompt_len_sum,
+        "prompt_len_count": prompt_len_count,
+        "gen_len_sum": gen_len_sum,
+        "gen_len_count": gen_len_count,
+        "prompt_len_max": prompt_len_max,
+        "gen_len_max": gen_len_max,
+        "abort_count": abort_count,
+        "error_count": error_count,
+        "queue_time_sum": queue_time_sum,
+        "queue_time_count": queue_time_count,
+        "prompt_buckets": prompt_buckets,
+        "gen_buckets": gen_buckets,
         "uptime": now - start_time,
         "engines": [],
     }
@@ -237,13 +346,19 @@ def store_metrics(data: dict):
         (timestamp, num_requests_running, num_requests_waiting, kv_cache_usage_perc,
          prompt_tokens_total, generation_tokens_total, request_success_total,
          prompt_tokens_cached_total, ttft_sum, ttft_count, itl_sum, itl_count,
-         e2e_sum, e2e_count)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         e2e_sum, e2e_count, prompt_len_sum, prompt_len_count, gen_len_sum, gen_len_count,
+         prompt_len_max, gen_len_max, abort_count, error_count, queue_time_sum, queue_time_count)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (ts, data["num_requests_running"], data["num_requests_waiting"],
          data["kv_cache_usage_perc"], data["prompt_tokens_total"],
          data["generation_tokens_total"], data["request_success_total"],
          data["prompt_tokens_cached_total"], data["ttft_sum"], data["ttft_count"],
-         data["itl_sum"], data["itl_count"], data["e2e_sum"], data["e2e_count"]),
+         data["itl_sum"], data["itl_count"], data["e2e_sum"], data["e2e_count"],
+         data["prompt_len_sum"], data["prompt_len_count"],
+         data["gen_len_sum"], data["gen_len_count"],
+         data["prompt_len_max"], data["gen_len_max"],
+         data["abort_count"], data["error_count"],
+         data["queue_time_sum"], data["queue_time_count"]),
     )
     for eng in data["engines"]:
         conn.execute(
@@ -339,6 +454,10 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
     req_rate, tok_rate, input_tok_rate = [], [], []
     cache_hit_rate = []
     ttft_avg, itl_avg, e2e_avg = [], [], []
+    avg_prompt_length, avg_generation_length = [], []
+    max_prompt_length, max_generation_length = [], []
+    failure_rate = []
+    queue_time_avg = []
 
     prev = None
     for r in rows:
@@ -373,6 +492,41 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
             cache_hit_rate.append(
                 (delta_cached / delta_prompt) if delta_prompt > 0 else 0
             )
+
+            # Incremental average prompt / generation length
+            d_prompt_len_count = (r["prompt_len_count"] or 0) - (prev["prompt_len_count"] or 0)
+            d_prompt_len_sum = (r["prompt_len_sum"] or 0) - (prev["prompt_len_sum"] or 0)
+            if d_prompt_len_count > 0:
+                avg_prompt_length.append(d_prompt_len_sum / d_prompt_len_count)
+            else:
+                avg_prompt_length.append(0)
+
+            d_gen_len_count = (r["gen_len_count"] or 0) - (prev["gen_len_count"] or 0)
+            d_gen_len_sum = (r["gen_len_sum"] or 0) - (prev["gen_len_sum"] or 0)
+            if d_gen_len_count > 0:
+                avg_generation_length.append(d_gen_len_sum / d_gen_len_count)
+            else:
+                avg_generation_length.append(0)
+
+            max_prompt_length.append(r["prompt_len_max"] or 0)
+            max_generation_length.append(r["gen_len_max"] or 0)
+
+            # Failure rate (abort + error) / total_requests in interval
+            d_abort = (r["abort_count"] or 0) - (prev["abort_count"] or 0)
+            d_error = (r["error_count"] or 0) - (prev["error_count"] or 0)
+            d_total = d_req + d_abort  # d_req already excludes abort; add abort back
+            if d_total > 0:
+                failure_rate.append(((d_abort + d_error) / d_total) * 100)
+            else:
+                failure_rate.append(0)
+
+            # Queue time average
+            d_qt_count = (r["queue_time_count"] or 0) - (prev["queue_time_count"] or 0)
+            d_qt_sum = (r["queue_time_sum"] or 0) - (prev["queue_time_sum"] or 0)
+            if d_qt_count > 0:
+                queue_time_avg.append(d_qt_sum / d_qt_count)
+            else:
+                queue_time_avg.append(0)
         else:
             req_rate.append(0)
             tok_rate.append(0)
@@ -380,6 +534,12 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
             pt = r["prompt_tokens_total"]
             ct = r["prompt_tokens_cached_total"]
             cache_hit_rate.append((ct / pt) if pt > 0 else 0)
+            avg_prompt_length.append(0)
+            avg_generation_length.append(0)
+            max_prompt_length.append(0)
+            max_generation_length.append(0)
+            failure_rate.append(0)
+            queue_time_avg.append(0)
 
         ttft_avg.append(
             (r["ttft_sum"] / r["ttft_count"]) if r["ttft_count"] > 0 else 0
@@ -397,10 +557,16 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
     ds_max = {}
     if max_points > 0 and len(timestamps) > max_points:
         all_arrays = [running, waiting, kv, req_rate, tok_rate, input_tok_rate,
-                      cache_hit_rate, ttft_avg, itl_avg, e2e_avg]
+                      cache_hit_rate, ttft_avg, itl_avg, e2e_avg,
+                      avg_prompt_length, avg_generation_length,
+                      max_prompt_length, max_generation_length,
+                      failure_rate, queue_time_avg]
         names = ["num_requests_running", "num_requests_waiting", "kv_cache_usage_perc",
                  "requests_per_second", "tokens_per_second", "input_tokens_per_second",
-                 "cache_hit_rate", "ttft_avg", "itl_avg", "e2e_avg"]
+                 "cache_hit_rate", "ttft_avg", "itl_avg", "e2e_avg",
+                 "avg_prompt_length", "avg_generation_length",
+                 "max_prompt_length", "max_generation_length",
+                 "failure_rate", "queue_time_avg"]
         timestamps, all_arrays, ds_max_list = _downsample(
             timestamps, all_arrays, max_points
         )
@@ -409,6 +575,9 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
         cache_hit_rate, ttft_avg, itl_avg, e2e_avg = (
             all_arrays[6], all_arrays[7], all_arrays[8], all_arrays[9]
         )
+        avg_prompt_length, avg_generation_length = all_arrays[10], all_arrays[11]
+        max_prompt_length, max_generation_length = all_arrays[12], all_arrays[13]
+        failure_rate, queue_time_avg = all_arrays[14], all_arrays[15]
         for idx, name in enumerate(names):
             ds_max[name] = ds_max_list[idx]
         downsampled = True
@@ -456,6 +625,12 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
         "ttft_avg": ttft_avg,
         "itl_avg": itl_avg,
         "e2e_avg": e2e_avg,
+        "avg_prompt_length": avg_prompt_length,
+        "avg_generation_length": avg_generation_length,
+        "max_prompt_length": max_prompt_length,
+        "max_generation_length": max_generation_length,
+        "failure_rate": failure_rate,
+        "queue_time_avg": queue_time_avg,
         "engine_history": engine_history,
         "downsampled": downsampled,
         **({"max": ds_max} if downsampled else {}),
@@ -478,6 +653,9 @@ def query_current() -> dict | None:
     conn.close()
 
     req_rate = tok_rate = input_rate = 0
+    avg_prompt_len = avg_gen_len = 0
+    failure_rate_val = 0
+    queue_time_val = 0
     if prev_row:
         dt = row["timestamp"] - prev_row["timestamp"]
         if dt > 0:
@@ -494,6 +672,31 @@ def query_current() -> dict | None:
             req_rate = max(0, d_req / dt)
             tok_rate = max(0, d_tok / dt)
             input_rate = max(0, d_input / dt)
+
+            # Incremental average prompt / generation length
+            plc = prev_row["prompt_len_count"] or 0
+            pls = prev_row["prompt_len_sum"] or 0
+            d_plc = (row["prompt_len_count"] or 0) - plc
+            d_pls = (row["prompt_len_sum"] or 0) - pls
+            if d_plc > 0:
+                avg_prompt_len = d_pls / d_plc
+            d_glc = (row["gen_len_count"] or 0) - (prev_row["gen_len_count"] or 0)
+            d_gls = (row["gen_len_sum"] or 0) - (prev_row["gen_len_sum"] or 0)
+            if d_glc > 0:
+                avg_gen_len = d_gls / d_glc
+
+            # Failure rate
+            d_abort = (row["abort_count"] or 0) - (prev_row["abort_count"] or 0)
+            d_error = (row["error_count"] or 0) - (prev_row["error_count"] or 0)
+            d_total = d_req + d_abort
+            if d_total > 0:
+                failure_rate_val = ((d_abort + d_error) / d_total) * 100
+
+            # Queue time
+            d_qt_count = (row["queue_time_count"] or 0) - (prev_row["queue_time_count"] or 0)
+            d_qt_sum = (row["queue_time_sum"] or 0) - (prev_row["queue_time_sum"] or 0)
+            if d_qt_count > 0:
+                queue_time_val = d_qt_sum / d_qt_count
 
     pt = row["prompt_tokens_total"]
     ct = row["prompt_tokens_cached_total"]
@@ -528,5 +731,11 @@ def query_current() -> dict | None:
         "ttft_avg": (row["ttft_sum"] / row["ttft_count"]) if row["ttft_count"] > 0 else 0,
         "itl_avg": (row["itl_sum"] / row["itl_count"]) if row["itl_count"] > 0 else 0,
         "e2e_avg": (row["e2e_sum"] / row["e2e_count"]) if row["e2e_count"] > 0 else 0,
+        "avg_prompt_length": avg_prompt_len,
+        "avg_generation_length": avg_gen_len,
+        "max_prompt_length": row["prompt_len_max"] or 0,
+        "max_generation_length": row["gen_len_max"] or 0,
+        "failure_rate": failure_rate_val,
+        "queue_time_avg": queue_time_val,
         "uptime": uptime,
     }

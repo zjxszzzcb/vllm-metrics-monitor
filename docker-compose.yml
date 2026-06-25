@@ -3,7 +3,7 @@ services:
     build: .
     container_name: vmm
     network_mode: host
-    command: ["${METRICS_URL:-http://localhost:8000/metrics}"]
+    command: ["${METRICS_URL:-http://100.79.101.7:18800/metrics}", "-p", "8080"]
     volumes:
       - vmm-data:/root/.vmm
     restart: unless-stopped
