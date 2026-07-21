@@ -716,6 +716,35 @@ def query_current() -> dict | None:
         conn2.close()
         uptime = time.time() - r["ts"] if r and r["ts"] else 0
 
+    # Latest per-engine snapshot
+    engines = []
+    try:
+        conn3 = _get_db()
+        latest_engine_ts = conn3.execute(
+            "SELECT MAX(timestamp) as ts FROM engine_metrics"
+        ).fetchone()["ts"]
+        if latest_engine_ts:
+            eng_rows = conn3.execute(
+                """SELECT engine_id, num_requests_running, num_requests_waiting,
+                          kv_cache_usage_perc, prompt_tokens_total, generation_tokens_total
+                   FROM engine_metrics
+                   WHERE timestamp = ?
+                   ORDER BY engine_id""",
+                (latest_engine_ts,),
+            ).fetchall()
+            for er in eng_rows:
+                engines.append({
+                    "id": er["engine_id"],
+                    "running": er["num_requests_running"],
+                    "waiting": er["num_requests_waiting"],
+                    "kv_cache": er["kv_cache_usage_perc"],
+                    "prompt_tokens": er["prompt_tokens_total"],
+                    "generation_tokens": er["generation_tokens_total"],
+                })
+        conn3.close()
+    except Exception:
+        engines = []
+
     return {
         "timestamp": row["timestamp"],
         "num_requests_running": row["num_requests_running"],
@@ -738,4 +767,5 @@ def query_current() -> dict | None:
         "failure_rate": failure_rate_val,
         "queue_time_avg": queue_time_val,
         "uptime": uptime,
+        "engines": engines,
     }
