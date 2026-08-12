@@ -3,7 +3,9 @@
 import json
 import logging
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import socket
+import sys
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 from . import collector, __version__
 
@@ -14,6 +16,14 @@ STATIC_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "static"))
 
 class DashboardHandler(BaseHTTPRequestHandler):
     """Serve static files and JSON API."""
+
+    # Idle connection timeout: a client that connects but stops sending
+    # (or stalls a keep-alive connection) must not hold a thread forever.
+    connection_timeout = 30
+
+    def setup(self):
+        super().setup()
+        self.request.settimeout(self.connection_timeout)
 
     def do_GET(self):
         if self.path == "/" or self.path == "/index.html":
@@ -80,6 +90,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        # Always revalidate so upgrades (new version stamp, new assets)
+        # show up immediately instead of a stale cached page.
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(data)
 
@@ -88,6 +101,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(data)
 
@@ -95,9 +109,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         logger.debug("HTTP %s", format % args)
 
 
+class DashboardServer(ThreadingHTTPServer):
+    """Threaded HTTP server with quiet handling of client disconnects."""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # Client went away mid-response (broken pipe / reset) is normal
+        # for a dashboard behind browsers and proxies; don't spam stderr.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, socket.timeout)):
+            logger.debug("Client %s disconnected: %s", client_address, exc)
+            return
+        super().handle_error(request, client_address)
+
+
 def run_server(port: int):
     """Start the HTTP server (blocking)."""
-    server = HTTPServer(("0.0.0.0", port), DashboardHandler)
+    server = DashboardServer(("0.0.0.0", port), DashboardHandler)
     logger.info("Dashboard running at http://0.0.0.0:%d", port)
     try:
         server.serve_forever()
