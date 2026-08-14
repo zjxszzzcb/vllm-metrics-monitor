@@ -8,23 +8,47 @@ import threading
 import time
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 # --- Configuration (set by CLI) ---
-metrics_url: str = "http://localhost:8000/metrics"
+metrics_urls: list[str] = ["http://localhost:8000/metrics"]
 scrape_interval: int = 1
 retention_hours: int = 24
 db_path: str = "data.db"
+
+# Registered sources, filled by init_db():
+# [{"id": int, "label": str, "url": str, "model_name": str | None}]
+sources: list[dict] = []
+
+
+def derive_label(url: str) -> str:
+    """Derive a short display label (host:port) from a metrics URL."""
+    try:
+        netloc = urlparse(url).netloc
+    except ValueError:
+        netloc = ""
+    return netloc or url
+
+
+def _source_by_id(source_id: int | None) -> dict:
+    """Look up a source by id, falling back to the first source."""
+    for s in sources:
+        if s["id"] == source_id:
+            return s
+    return sources[0]
 
 
 # --- Database ---
 
 
 def _get_db():
+    # WAL mode is persistent once set (init_db enables it), so connections
+    # only need the row factory here — re-running the journal_mode PRAGMA on
+    # every open adds lock contention with multiple scraper threads.
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -49,39 +73,125 @@ def _migrate_db(conn):
             pass  # column already exists
 
 
+# Columns of the metrics table, excluding timestamp/source_id (the PK).
+# Used by CREATE TABLE, INSERT, and the source_id rebuild migration so the
+# explicit column lists can never drift apart.
+_METRICS_COLS = [
+    "num_requests_running", "num_requests_waiting", "kv_cache_usage_perc",
+    "prompt_tokens_total", "generation_tokens_total", "request_success_total",
+    "prompt_tokens_cached_total", "ttft_sum", "ttft_count", "itl_sum",
+    "itl_count", "e2e_sum", "e2e_count", "prompt_len_sum", "prompt_len_count",
+    "gen_len_sum", "gen_len_count", "prompt_len_max", "gen_len_max",
+    "abort_count", "error_count", "queue_time_sum", "queue_time_count",
+]
+
+_ENGINE_COLS = [
+    "num_requests_running", "num_requests_waiting", "kv_cache_usage_perc",
+    "prompt_tokens_total", "generation_tokens_total",
+]
+
+_METRICS_SCHEMA = """
+    timestamp REAL,
+    source_id INTEGER NOT NULL DEFAULT 0,
+    %s,
+    PRIMARY KEY (timestamp, source_id)
+""" % ", ".join(f"{c} REAL" for c in _METRICS_COLS)
+
+_ENGINE_SCHEMA = """
+    timestamp REAL,
+    engine_id INTEGER,
+    source_id INTEGER NOT NULL DEFAULT 0,
+    %s,
+    PRIMARY KEY (timestamp, engine_id, source_id)
+""" % ", ".join(f"{c} REAL" for c in _ENGINE_COLS)
+
+
+def _has_column(conn, table: str, column: str) -> bool:
+    return any(
+        row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})")
+    )
+
+
+def _rebuild_with_source_id(conn, table: str, key_cols: list[str], cols: list[str],
+                            schema: str, first_source_id: int):
+    """Rebuild a pre-multi-source table, attributing old rows to the first source.
+
+    SQLite cannot alter a PRIMARY KEY, so adding source_id to the PK requires
+    creating a new table, copying rows, and renaming.
+    """
+    all_cols = key_cols + cols
+    col_list = ", ".join(all_cols)
+    row_count = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+    conn.execute(f"CREATE TABLE {table}_new ({schema})")
+    conn.execute(
+        f"INSERT INTO {table}_new ({col_list}, source_id) "
+        f"SELECT {col_list}, ? FROM {table}",
+        (first_source_id,),
+    )
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+    logger.info("Migrated table %s to multi-source schema (%d rows kept)",
+                table, row_count)
+
+
+def _seed_sources(conn):
+    """Register configured URLs in the sources table and load them globally."""
+    existing = {
+        row["url"]: row["label"]
+        for row in conn.execute("SELECT url, label FROM sources")
+    }
+    used_labels = set(existing.values())
+    for url in metrics_urls:
+        if url in existing:
+            continue
+        label = derive_label(url)
+        # Disambiguate duplicate host:port labels (e.g. same URL entered twice
+        # with different paths, or two URLs sharing a netloc).
+        n = 2
+        unique = label
+        while unique in used_labels:
+            unique = f"{label} ({n})"
+            n += 1
+        used_labels.add(unique)
+        conn.execute(
+            "INSERT INTO sources (label, url) VALUES (?, ?)", (unique, url)
+        )
+    conn.commit()
+
+    global sources
+    sources = [
+        {"id": row["id"], "label": row["label"], "url": row["url"],
+         "model_name": row["model_name"]}
+        for row in conn.execute("SELECT * FROM sources ORDER BY id")
+    ]
+
+
 def init_db():
     conn = _get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS metrics (
-            timestamp REAL PRIMARY KEY,
-            num_requests_running REAL,
-            num_requests_waiting REAL,
-            kv_cache_usage_perc REAL,
-            prompt_tokens_total REAL,
-            generation_tokens_total REAL,
-            request_success_total REAL,
-            prompt_tokens_cached_total REAL,
-            ttft_sum REAL, ttft_count REAL,
-            itl_sum REAL, itl_count REAL,
-            e2e_sum REAL, e2e_count REAL,
-            prompt_len_sum REAL, prompt_len_count REAL,
-            gen_len_sum REAL, gen_len_count REAL,
-            prompt_len_max REAL, gen_len_max REAL,
-            abort_count REAL, error_count REAL,
-            queue_time_sum REAL, queue_time_count REAL
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(f"""
+        CREATE TABLE IF NOT EXISTS sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT,
+            url TEXT UNIQUE,
+            model_name TEXT
         );
-        CREATE TABLE IF NOT EXISTS engine_metrics (
-            timestamp REAL,
-            engine_id INTEGER,
-            num_requests_running REAL,
-            num_requests_waiting REAL,
-            kv_cache_usage_perc REAL,
-            prompt_tokens_total REAL,
-            generation_tokens_total REAL,
-            PRIMARY KEY (timestamp, engine_id)
-        );
+        CREATE TABLE IF NOT EXISTS metrics ({_METRICS_SCHEMA});
+        CREATE TABLE IF NOT EXISTS engine_metrics ({_ENGINE_SCHEMA});
     """)
+    # Additive column migrations for pre-multi-source databases; must run
+    # before the rebuild so the old table has every column we copy.
     _migrate_db(conn)
+    # Sources must be seeded before the rebuild: old rows are attributed to
+    # the first configured URL.
+    _seed_sources(conn)
+    if not _has_column(conn, "metrics", "source_id"):
+        first_id = sources[0]["id"]
+        _rebuild_with_source_id(conn, "metrics", ["timestamp"], _METRICS_COLS,
+                                _METRICS_SCHEMA, first_id)
+        _rebuild_with_source_id(conn, "engine_metrics",
+                                ["timestamp", "engine_id"], _ENGINE_COLS,
+                                _ENGINE_SCHEMA, first_id)
     conn.commit()
     conn.close()
 
@@ -168,12 +278,35 @@ def _estimate_histogram_max(current_buckets: dict, prev_buckets: dict | None) ->
 # --- Collect & Store ---
 
 
-_last_snapshot: dict | None = None
+# Per-source last successful snapshot (fallback baseline), keyed by source id.
+_last_snapshots: dict[int, dict] = {}
 
 
-def _fallback_snapshot() -> dict:
+def _extract_model_name(parsed: dict) -> str | None:
+    """Extract the model name from core vLLM metrics' model_name label."""
+    for metric in ("vllm:num_requests_running", "vllm:prompt_tokens_total",
+                   "vllm:generation_tokens_total"):
+        for e in parsed.get(metric, []):
+            name = e["labels"].get("model_name")
+            if name:
+                return name
+    return None
+
+
+def _update_model_name(source: dict, model_name: str):
+    """Persist a newly discovered (or changed) model name for a source."""
+    source["model_name"] = model_name
+    conn = _get_db()
+    conn.execute("UPDATE sources SET model_name = ? WHERE id = ?",
+                 (model_name, source["id"]))
+    conn.commit()
+    conn.close()
+    logger.info("Source %s serves model %s", source["label"], model_name)
+
+
+def _fallback_snapshot(source_id: int) -> dict:
     """Return snapshot with gauges=0 and counters carried from last sample."""
-    prev = _last_snapshot
+    prev = _last_snapshots.get(source_id)
     return {
         "timestamp": time.time(),
         "num_requests_running": 0,
@@ -206,23 +339,28 @@ def _fallback_snapshot() -> dict:
     }
 
 
-def collect_metrics() -> dict | None:
-    """Fetch and parse vLLM metrics. Returns fallback dict on timeout."""
-    global _last_snapshot
+def collect_metrics(source_id: int) -> dict | None:
+    """Fetch and parse vLLM metrics for one source. Returns fallback dict on timeout."""
+    source = _source_by_id(source_id)
+    last = _last_snapshots.get(source_id)
     try:
-        req = Request(metrics_url, headers={"Accept": "text/plain"})
+        req = Request(source["url"], headers={"Accept": "text/plain"})
         with urlopen(req, timeout=5) as resp:
             text = resp.read().decode()
     except (URLError, OSError) as e:
-        logger.warning("Metrics fetch failed: %s", e)
-        if _last_snapshot is None:
+        logger.warning("Metrics fetch failed for %s: %s", source["label"], e)
+        if last is None:
             # No baseline yet; storing a fallback with zero counters would
             # create a fake "reset" and produce a huge spike on the next
             # successful scrape.
             return None
-        return _fallback_snapshot()
+        return _fallback_snapshot(source_id)
 
     parsed = parse_prometheus(text)
+
+    model_name = _extract_model_name(parsed)
+    if model_name and model_name != source.get("model_name"):
+        _update_model_name(source, model_name)
 
     running_by_engine = _sum_by_label(
         parsed.get("vllm:num_requests_running", []), "engine"
@@ -273,13 +411,13 @@ def collect_metrics() -> dict | None:
     prompt_buckets = _parse_histogram_buckets(parsed, "vllm:request_prompt_tokens")
     gen_buckets = _parse_histogram_buckets(parsed, "vllm:request_generation_tokens")
 
-    prev_prompt_buckets = _last_snapshot.get("prompt_buckets") if _last_snapshot else None
-    prev_gen_buckets = _last_snapshot.get("gen_buckets") if _last_snapshot else None
+    prev_prompt_buckets = last.get("prompt_buckets") if last else None
+    prev_gen_buckets = last.get("gen_buckets") if last else None
 
     # Detect counter reset for histograms (vLLM restarted)
-    if _last_snapshot and prompt_len_count < _last_snapshot.get("prompt_len_count", 0):
+    if last and prompt_len_count < last.get("prompt_len_count", 0):
         prev_prompt_buckets = None
-    if _last_snapshot and gen_len_count < _last_snapshot.get("gen_len_count", 0):
+    if last and gen_len_count < last.get("gen_len_count", 0):
         prev_gen_buckets = None
 
     prompt_len_max = _estimate_histogram_max(prompt_buckets, prev_prompt_buckets)
@@ -333,23 +471,23 @@ def collect_metrics() -> dict | None:
             ).get(eid, 0),
         })
 
-    _last_snapshot = data
+    _last_snapshots[source_id] = data
     return data
 
 
-def store_metrics(data: dict):
+def store_metrics(source_id: int, data: dict):
     """Persist metrics snapshot to SQLite."""
     conn = _get_db()
     ts = data["timestamp"]
     conn.execute(
         """INSERT OR REPLACE INTO metrics
-        (timestamp, num_requests_running, num_requests_waiting, kv_cache_usage_perc,
+        (timestamp, source_id, num_requests_running, num_requests_waiting, kv_cache_usage_perc,
          prompt_tokens_total, generation_tokens_total, request_success_total,
          prompt_tokens_cached_total, ttft_sum, ttft_count, itl_sum, itl_count,
          e2e_sum, e2e_count, prompt_len_sum, prompt_len_count, gen_len_sum, gen_len_count,
          prompt_len_max, gen_len_max, abort_count, error_count, queue_time_sum, queue_time_count)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (ts, data["num_requests_running"], data["num_requests_waiting"],
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (ts, source_id, data["num_requests_running"], data["num_requests_waiting"],
          data["kv_cache_usage_perc"], data["prompt_tokens_total"],
          data["generation_tokens_total"], data["request_success_total"],
          data["prompt_tokens_cached_total"], data["ttft_sum"], data["ttft_count"],
@@ -363,10 +501,10 @@ def store_metrics(data: dict):
     for eng in data["engines"]:
         conn.execute(
             """INSERT OR REPLACE INTO engine_metrics
-            (timestamp, engine_id, num_requests_running, num_requests_waiting,
+            (timestamp, engine_id, source_id, num_requests_running, num_requests_waiting,
              kv_cache_usage_perc, prompt_tokens_total, generation_tokens_total)
-            VALUES (?,?,?,?,?,?,?)""",
-            (ts, eng["id"], eng["running"], eng["waiting"],
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (ts, eng["id"], source_id, eng["running"], eng["waiting"],
              eng["kv_cache"], eng["prompt_tokens"], eng["generation_tokens"]),
         )
     conn.commit()
@@ -376,23 +514,32 @@ def store_metrics(data: dict):
 # --- Scraper Thread ---
 
 
-def scraper_loop():
-    """Background thread: periodically scrape and store metrics."""
-    logger.info("Scraper started, interval=%ds, url=%s", scrape_interval, metrics_url)
+def scraper_loop(source_id: int):
+    """Background thread: periodically scrape and store metrics for one source."""
+    source = _source_by_id(source_id)
+    logger.info("Scraper started, interval=%ds, url=%s",
+                scrape_interval, source["url"])
     while True:
-        data = collect_metrics()
+        data = collect_metrics(source_id)
         if data:
-            store_metrics(data)
+            store_metrics(source_id, data)
             logger.debug(
-                "Collected: running=%.0f waiting=%.0f",
+                "Collected [%s]: running=%.0f waiting=%.0f",
+                source["label"],
                 data["num_requests_running"], data["num_requests_waiting"],
             )
         time.sleep(scrape_interval)
 
 
 def start_scraper():
-    """Start scraper and cleanup threads."""
-    threading.Thread(target=scraper_loop, daemon=True).start()
+    """Start one scraper thread per configured source, plus the cleanup thread."""
+    for source in sources:
+        # Sources left in the DB from earlier runs keep their history visible
+        # in the UI but are not scraped unless still configured.
+        if source["url"] not in metrics_urls:
+            continue
+        threading.Thread(target=scraper_loop, args=(source["id"],),
+                         daemon=True).start()
 
     def cleanup_loop():
         while True:
@@ -440,13 +587,16 @@ def _downsample(timestamps, value_arrays, max_points):
     return out_ts, out_mean, out_max
 
 
-def query_history(minutes: int, max_points: int = 300) -> dict:
-    """Query historical metrics for the last N minutes."""
+def query_history(minutes: int, max_points: int = 300,
+                  source_id: int | None = None) -> dict:
+    """Query historical metrics for the last N minutes for one source."""
+    source = _source_by_id(source_id)
     cutoff = time.time() - minutes * 60
     conn = _get_db()
     rows = conn.execute(
-        "SELECT * FROM metrics WHERE timestamp >= ? ORDER BY timestamp",
-        (cutoff,),
+        "SELECT * FROM metrics WHERE timestamp >= ? AND source_id = ? "
+        "ORDER BY timestamp",
+        (cutoff, source["id"]),
     ).fetchall()
 
     timestamps = []
@@ -585,8 +735,9 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
     # Per-engine history
     engine_history = {}
     eng_rows = conn.execute(
-        "SELECT * FROM engine_metrics WHERE timestamp >= ? ORDER BY timestamp, engine_id",
-        (cutoff,),
+        "SELECT * FROM engine_metrics WHERE timestamp >= ? AND source_id = ? "
+        "ORDER BY timestamp, engine_id",
+        (cutoff, source["id"]),
     ).fetchall()
     for er in eng_rows:
         eid = str(er["engine_id"])
@@ -637,18 +788,23 @@ def query_history(minutes: int, max_points: int = 300) -> dict:
     }
 
 
-def query_current() -> dict | None:
-    """Get the most recent metrics snapshot with computed rates."""
+def query_current(source_id: int | None = None) -> dict | None:
+    """Get the most recent metrics snapshot for one source, with computed rates."""
+    source = _source_by_id(source_id)
     conn = _get_db()
     row = conn.execute(
-        "SELECT * FROM metrics ORDER BY timestamp DESC LIMIT 1"
+        "SELECT * FROM metrics WHERE source_id = ? "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (source["id"],),
     ).fetchone()
     if not row:
         conn.close()
         return None
 
     prev_row = conn.execute(
-        "SELECT * FROM metrics ORDER BY timestamp DESC LIMIT 1 OFFSET 1"
+        "SELECT * FROM metrics WHERE source_id = ? "
+        "ORDER BY timestamp DESC LIMIT 1 OFFSET 1",
+        (source["id"],),
     ).fetchone()
     conn.close()
 
@@ -705,14 +861,17 @@ def query_current() -> dict | None:
     # Try to get uptime from live metrics
     uptime = 0
     try:
-        req = Request(metrics_url, headers={"Accept": "text/plain"})
+        req = Request(source["url"], headers={"Accept": "text/plain"})
         with urlopen(req, timeout=5) as resp:
             parsed = parse_prometheus(resp.read().decode())
             start = _get_total(parsed, "process_start_time_seconds")
             uptime = time.time() - start
     except (URLError, OSError, ValueError):
         conn2 = _get_db()
-        r = conn2.execute("SELECT MIN(timestamp) as ts FROM metrics").fetchone()
+        r = conn2.execute(
+            "SELECT MIN(timestamp) as ts FROM metrics WHERE source_id = ?",
+            (source["id"],),
+        ).fetchone()
         conn2.close()
         uptime = time.time() - r["ts"] if r and r["ts"] else 0
 
@@ -721,16 +880,17 @@ def query_current() -> dict | None:
     try:
         conn3 = _get_db()
         latest_engine_ts = conn3.execute(
-            "SELECT MAX(timestamp) as ts FROM engine_metrics"
+            "SELECT MAX(timestamp) as ts FROM engine_metrics WHERE source_id = ?",
+            (source["id"],),
         ).fetchone()["ts"]
         if latest_engine_ts:
             eng_rows = conn3.execute(
                 """SELECT engine_id, num_requests_running, num_requests_waiting,
                           kv_cache_usage_perc, prompt_tokens_total, generation_tokens_total
                    FROM engine_metrics
-                   WHERE timestamp = ?
+                   WHERE timestamp = ? AND source_id = ?
                    ORDER BY engine_id""",
-                (latest_engine_ts,),
+                (latest_engine_ts, source["id"]),
             ).fetchall()
             for er in eng_rows:
                 engines.append({

@@ -30,10 +30,11 @@ Open [http://localhost:8080](http://localhost:8080) — that's it.
 ## 📖 Usage
 
 ```
-vmm [URL] [OPTIONS]
+vmm [URL...] [OPTIONS]
 
 Positional:
-  URL                   vLLM Prometheus metrics endpoint
+  URL                   vLLM Prometheus metrics endpoint(s); multiple URLs are
+                        scraped concurrently and switchable in the dashboard
                         (default: http://localhost:8000/metrics)
 
 Options:
@@ -49,6 +50,7 @@ Options:
 
 ```bash
 vmm http://vllm-server:8000/metrics -p 9090 -i 5
+vmm http://vllm-1:8000/metrics http://vllm-2:8000/metrics   # multiple servers
 vmm http://vllm-server:8000/metrics --reset
 vmm http://vllm-server:8000/metrics --retention 72 --db /data/vmm.db
 ```
@@ -62,8 +64,8 @@ docker build -t vmm .
 # Run
 docker run -d --network host vmm http://localhost:8000/metrics
 
-# Or use docker compose
-METRICS_URL=http://192.168.1.100:8000/metrics docker compose up -d
+# Or use docker compose (space-separated for multiple endpoints)
+METRICS_URLS="http://192.168.1.100:8000/metrics http://192.168.1.101:8000/metrics" docker compose up -d
 ```
 
 ## 🏗️ Architecture

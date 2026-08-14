@@ -19,9 +19,9 @@ def main():
     )
     parser.add_argument(
         "url",
-        nargs="?",
-        default="http://localhost:8000/metrics",
-        help="vLLM Prometheus metrics endpoint (default: http://localhost:8000/metrics)",
+        nargs="*",
+        help="vLLM Prometheus metrics endpoint(s); multiple URLs are scraped "
+             "concurrently (default: http://localhost:8000/metrics)",
     )
     parser.add_argument(
         "--port", "-p",
@@ -89,7 +89,7 @@ def main():
                 logger.info("Removed %s", p)
 
     # Configure collector
-    collector.metrics_url = args.url
+    collector.metrics_urls = args.url or ["http://localhost:8000/metrics"]
     collector.scrape_interval = args.interval
     collector.retention_hours = args.retention
     collector.db_path = db_file

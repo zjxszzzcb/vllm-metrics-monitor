@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build package
+        run: uv build
+
+      - name: Smoke test wheel
+        run: |
+          uv venv
+          uv pip install dist/*.whl
+          .venv/bin/vmm --version
+
+      - name: Build Docker image
+        run: docker build -t vmm-ci .
+
+      - name: Smoke test Docker image
+        run: docker run --rm vmm-ci --version

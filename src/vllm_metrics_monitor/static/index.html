@@ -87,6 +87,17 @@
     color: white;
   }
   .time-range button:hover:not(.active) { color: var(--text); }
+  .source-select {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+    max-width: 320px;
+    cursor: pointer;
+  }
+  .source-select:focus { outline: none; border-color: var(--accent); }
   .toggle-btn {
     display: flex;
     align-items: center;
@@ -235,6 +246,7 @@
     <span style="font-size:12px;color:var(--text-dim);font-weight:400;margin-top:auto">v{{ VERSION }}</span>
   </h1>
   <div class="header-right">
+    <select class="source-select" id="sourceSelect" style="display:none"></select>
     <span class="last-update" id="lastUpdate">Connecting...</span>
     <div class="time-range">
       <button data-minutes="30">30m</button>
@@ -465,6 +477,7 @@ function tsToPoints(timestamps, values) {
 let selectedMinutes = 120;
 let charts = {};
 let connected = false;
+let selectedSource = null;  // source id; null until /api/sources loads
 
 function initCharts() {
   charts.running = makeChart('chartRunning', [
@@ -563,9 +576,59 @@ function updateMultiChart(chart, datasetsData) {
 }
 
 // --- Data Fetching ---
+function sourceParam() {
+  return selectedSource != null ? selectedSource : '';
+}
+
+async function fetchSources() {
+  try {
+    const resp = await fetch('/api/sources');
+    if (!resp.ok) return;
+    const sourcesList = await resp.json();
+    if (!sourcesList || !sourcesList.length) return;
+
+    const select = document.getElementById('sourceSelect');
+    const saved = parseInt(localStorage.getItem('vmm_source'));
+    const firstLoad = select.options.length === 0;
+
+    // Skip the DOM rebuild when nothing changed (rebuilding would close
+    // the dropdown while the user is browsing it).
+    const signature = sourcesList.map(
+      s => s.id + '|' + s.label + '|' + (s.model_name || '')
+    ).join(';');
+    if (signature !== select.dataset.signature) {
+      select.dataset.signature = signature;
+      select.innerHTML = '';
+      for (const s of sourcesList) {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.model_name ? s.model_name + ' (' + s.label + ')' : s.label;
+        select.appendChild(opt);
+      }
+    }
+
+    if (firstLoad) {
+      // Restore previous selection if it still exists, else first source
+      const ids = sourcesList.map(s => s.id);
+      selectedSource = ids.includes(saved) ? saved : sourcesList[0].id;
+      // A single source needs no switcher
+      select.style.display = sourcesList.length > 1 ? '' : 'none';
+    }
+    // If the previously selected source vanished (server restarted with
+    // different URLs), fall back to whatever the dropdown now shows.
+    const ids = sourcesList.map(s => s.id);
+    if (!ids.includes(selectedSource)) {
+      selectedSource = sourcesList[0].id;
+    }
+    select.value = selectedSource;
+  } catch (e) {
+    console.error('Failed to fetch sources:', e);
+  }
+}
+
 async function fetchCurrent() {
   try {
-    const resp = await fetch('/api/current');
+    const resp = await fetch('/api/current?source=' + sourceParam());
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     if (!data) return;
@@ -593,7 +656,7 @@ async function fetchCurrent() {
 
 async function fetchHistory() {
   try {
-    const resp = await fetch('/api/history?minutes=' + selectedMinutes);
+    const resp = await fetch('/api/history?minutes=' + selectedMinutes + '&source=' + sourceParam());
     if (!resp.ok) return;
     const data = await resp.json();
     if (!data || !data.timestamps || data.timestamps.length === 0) return;
@@ -655,7 +718,7 @@ async function fetchHistory() {
 
 async function fetchEngineTable() {
   try {
-    const resp = await fetch('/api/current');
+    const resp = await fetch('/api/current?source=' + sourceParam());
     if (!resp.ok) return;
     const data = await resp.json();
 
@@ -709,18 +772,31 @@ document.querySelectorAll('.time-range button').forEach(btn => {
   });
 });
 
+// --- Source Selector ---
+document.getElementById('sourceSelect').addEventListener('change', function() {
+  selectedSource = parseInt(this.value);
+  localStorage.setItem('vmm_source', selectedSource);
+  fetchCurrent();
+  fetchHistory();
+  fetchEngineTable();
+});
+
 // --- Init ---
 initCharts();
 
-// Initial load
-fetchCurrent();
-fetchHistory();
-fetchEngineTable();
+// Initial load: sources first so every request carries the selected source
+fetchSources().then(() => {
+  fetchCurrent();
+  fetchHistory();
+  fetchEngineTable();
+});
 
 // Periodic refresh
 setInterval(fetchCurrent, 3000);
 setInterval(fetchHistory, 3000);
 setInterval(fetchEngineTable, 3000);
+// Refresh source list so newly discovered model names show up
+setInterval(fetchSources, 30000);
 </script>
 </body>
 </html>

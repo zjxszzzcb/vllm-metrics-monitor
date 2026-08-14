@@ -28,8 +28,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/" or self.path == "/index.html":
             self._serve_file("index.html", "text/html", template_vars={"VERSION": __version__})
-        elif self.path == "/api/current":
-            self._serve_json(collector.query_current())
+        elif self.path == "/api/sources":
+            self._serve_json(collector.sources)
+        elif self.path.startswith("/api/current"):
+            self._serve_json(collector.query_current(self._source_param()))
         elif self.path.startswith("/api/history"):
             minutes = 120
             max_points = 180
@@ -48,9 +50,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         max_points = int(v)
                     except ValueError:
                         pass
-            self._serve_json(collector.query_history(minutes, max_points))
+            self._serve_json(
+                collector.query_history(minutes, max_points, self._source_param())
+            )
         else:
             self._serve_static(self.path)
+
+    def _source_param(self) -> int | None:
+        """Parse the ?source= query param; None means 'first source'."""
+        query = self.path.split("?", 1)[-1] if "?" in self.path else ""
+        for part in query.split("&"):
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            if k == "source":
+                try:
+                    return int(v)
+                except ValueError:
+                    return None
+        return None
 
     def _serve_static(self, raw_path: str):
         """Serve a static file with path traversal protection."""
