@@ -11,6 +11,8 @@
 
 **vLLM Metrics Monitor (`vmm`)** is a lightweight dashboard that scrapes Prometheus metrics from vLLM, persists to SQLite, and serves a real-time web UI. Zero external dependencies — pure Python standard library.
 
+Monitor multiple vLLM servers at once: pass several metrics endpoints and switch between them (labeled by model name) from the dropdown in the dashboard header.
+
 ![Dashboard Preview](docs/screenshot.webp)
 
 ## 🚀 Quick Start
