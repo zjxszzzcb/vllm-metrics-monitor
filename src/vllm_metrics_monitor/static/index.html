@@ -87,6 +87,17 @@
     color: white;
   }
   .time-range button:hover:not(.active) { color: var(--text); }
+  .source-select {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+    max-width: 320px;
+    cursor: pointer;
+  }
+  .source-select:focus { outline: none; border-color: var(--accent); }
   .toggle-btn {
     display: flex;
     align-items: center;
@@ -204,19 +215,21 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
   }
-  th {
+  th, td {
     text-align: left;
     padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
+    border: 1px solid var(--border);
+  }
+  th {
     color: var(--text-dim);
     font-weight: 500;
+    background: rgba(255,255,255,0.03);
   }
-  td {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-  }
-  tr:last-child td { border-bottom: none; }
+  tr:last-child td { border-bottom: 1px solid var(--border); }
 
   @media (max-width: 540px) {
     .charts-grid { grid-template-columns: 1fr; }
@@ -233,6 +246,7 @@
     <span style="font-size:12px;color:var(--text-dim);font-weight:400;margin-top:auto">v{{ VERSION }}</span>
   </h1>
   <div class="header-right">
+    <select class="source-select" id="sourceSelect" style="display:none"></select>
     <span class="last-update" id="lastUpdate">Connecting...</span>
     <div class="time-range">
       <button data-minutes="30">30m</button>
@@ -463,6 +477,7 @@ function tsToPoints(timestamps, values) {
 let selectedMinutes = 120;
 let charts = {};
 let connected = false;
+let selectedSource = null;  // source id; null until /api/sources loads
 
 function initCharts() {
   charts.running = makeChart('chartRunning', [
@@ -561,9 +576,59 @@ function updateMultiChart(chart, datasetsData) {
 }
 
 // --- Data Fetching ---
+function sourceParam() {
+  return selectedSource != null ? selectedSource : '';
+}
+
+async function fetchSources() {
+  try {
+    const resp = await fetch('/api/sources');
+    if (!resp.ok) return;
+    const sourcesList = await resp.json();
+    if (!sourcesList || !sourcesList.length) return;
+
+    const select = document.getElementById('sourceSelect');
+    const saved = parseInt(localStorage.getItem('vmm_source'));
+    const firstLoad = select.options.length === 0;
+
+    // Skip the DOM rebuild when nothing changed (rebuilding would close
+    // the dropdown while the user is browsing it).
+    const signature = sourcesList.map(
+      s => s.id + '|' + s.label + '|' + (s.model_name || '')
+    ).join(';');
+    if (signature !== select.dataset.signature) {
+      select.dataset.signature = signature;
+      select.innerHTML = '';
+      for (const s of sourcesList) {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.model_name ? s.model_name + ' (' + s.label + ')' : s.label;
+        select.appendChild(opt);
+      }
+    }
+
+    if (firstLoad) {
+      // Restore previous selection if it still exists, else first source
+      const ids = sourcesList.map(s => s.id);
+      selectedSource = ids.includes(saved) ? saved : sourcesList[0].id;
+      // A single source needs no switcher
+      select.style.display = sourcesList.length > 1 ? '' : 'none';
+    }
+    // If the previously selected source vanished (server restarted with
+    // different URLs), fall back to whatever the dropdown now shows.
+    const ids = sourcesList.map(s => s.id);
+    if (!ids.includes(selectedSource)) {
+      selectedSource = sourcesList[0].id;
+    }
+    select.value = selectedSource;
+  } catch (e) {
+    console.error('Failed to fetch sources:', e);
+  }
+}
+
 async function fetchCurrent() {
   try {
-    const resp = await fetch('/api/current');
+    const resp = await fetch('/api/current?source=' + sourceParam());
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     if (!data) return;
@@ -591,7 +656,7 @@ async function fetchCurrent() {
 
 async function fetchHistory() {
   try {
-    const resp = await fetch('/api/history?minutes=' + selectedMinutes);
+    const resp = await fetch('/api/history?minutes=' + selectedMinutes + '&source=' + sourceParam());
     if (!resp.ok) return;
     const data = await resp.json();
     if (!data || !data.timestamps || data.timestamps.length === 0) return;
@@ -653,40 +718,30 @@ async function fetchHistory() {
 
 async function fetchEngineTable() {
   try {
-    const resp = await fetch('/api/current');
+    const resp = await fetch('/api/current?source=' + sourceParam());
     if (!resp.ok) return;
-    // We need engine data - fetch from history which includes engine_history
-    const histResp = await fetch('/api/history?minutes=1');
-    if (!histResp.ok) return;
-    const histData = await histResp.json();
+    const data = await resp.json();
 
-    // Get current values from latest history point
-    const currentResp = await fetch('/api/current');
-    const currentData = await currentResp.json();
-
-    // Build table from engine_history - use the last data point
     const tbody = document.getElementById('engineTableBody');
-    const engHist = histData.engine_history || {};
-    const engineIds = Object.keys(engHist).sort((a, b) => a - b);
+    const engines = data.engines || [];
 
-    if (engineIds.length === 0) {
+    if (!engines.length) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim)">No engine data</td></tr>';
       return;
     }
 
     let html = '';
-    for (const eid of engineIds) {
-      const e = engHist[eid];
-      const lastRunning = e.running ? e.running[e.running.length - 1] : '-';
-      const lastWaiting = e.waiting ? e.waiting[e.waiting.length - 1] : '-';
-      const lastKV = e.kv_cache ? (e.kv_cache[e.kv_cache.length - 1] * 100).toFixed(2) + '%' : '-';
+    for (const e of engines) {
+      const kv = (e.kv_cache != null && !isNaN(e.kv_cache))
+        ? (e.kv_cache * 100).toFixed(2) + '%'
+        : '-';
       html += '<tr>';
-      html += '<td>Engine ' + eid + '</td>';
-      html += '<td>' + lastRunning + '</td>';
-      html += '<td>' + lastWaiting + '</td>';
-      html += '<td>' + lastKV + '</td>';
-      html += '<td>-</td>';
-      html += '<td>-</td>';
+      html += '<td>Engine ' + e.id + '</td>';
+      html += '<td>' + fmtNum(e.running, 0) + '</td>';
+      html += '<td>' + fmtNum(e.waiting, 0) + '</td>';
+      html += '<td>' + kv + '</td>';
+      html += '<td>' + fmtNum(e.prompt_tokens, 0) + '</td>';
+      html += '<td>' + fmtNum(e.generation_tokens, 0) + '</td>';
       html += '</tr>';
     }
     tbody.innerHTML = html;
@@ -717,18 +772,31 @@ document.querySelectorAll('.time-range button').forEach(btn => {
   });
 });
 
+// --- Source Selector ---
+document.getElementById('sourceSelect').addEventListener('change', function() {
+  selectedSource = parseInt(this.value);
+  localStorage.setItem('vmm_source', selectedSource);
+  fetchCurrent();
+  fetchHistory();
+  fetchEngineTable();
+});
+
 // --- Init ---
 initCharts();
 
-// Initial load
-fetchCurrent();
-fetchHistory();
-fetchEngineTable();
+// Initial load: sources first so every request carries the selected source
+fetchSources().then(() => {
+  fetchCurrent();
+  fetchHistory();
+  fetchEngineTable();
+});
 
 // Periodic refresh
 setInterval(fetchCurrent, 3000);
 setInterval(fetchHistory, 3000);
 setInterval(fetchEngineTable, 3000);
+// Refresh source list so newly discovered model names show up
+setInterval(fetchSources, 30000);
 </script>
 </body>
 </html>
