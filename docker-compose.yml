@@ -4,8 +4,9 @@ services:
     container_name: vmm
     network_mode: host
     # ENTRYPOINT is "vmm"; override it so the env var can word-split into
-    # multiple positional URL arguments.
-    entrypoint: sh -c 'vmm ${METRICS_URLS:-http://127.0.0.1:18803/metrics http://127.0.0.1:18800/metrics http://127.0.0.1:18801/metrics} -p 8080'
+    # multiple positional URL arguments. Set METRICS_URLS in a local .env
+    # file (gitignored) or the environment.
+    entrypoint: sh -c 'vmm ${METRICS_URLS:-http://localhost:8000/metrics} -p 8080'
     volumes:
       - vmm-data:/root/.vmm
     restart: unless-stopped

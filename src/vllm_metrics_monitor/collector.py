@@ -47,7 +47,11 @@ def _get_db():
     # WAL mode is persistent once set (init_db enables it), so connections
     # only need the row factory here — re-running the journal_mode PRAGMA on
     # every open adds lock contention with multiple scraper threads.
-    conn = sqlite3.connect(db_path)
+    # timeout=30: with several writer threads plus the hourly cleanup, a
+    # writer may legitimately wait longer than the 5s default for the WAL
+    # write lock; the scraper must not die on a transient "database is
+    # locked".
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -520,14 +524,21 @@ def scraper_loop(source_id: int):
     logger.info("Scraper started, interval=%ds, url=%s",
                 scrape_interval, source["url"])
     while True:
-        data = collect_metrics(source_id)
-        if data:
-            store_metrics(source_id, data)
-            logger.debug(
-                "Collected [%s]: running=%.0f waiting=%.0f",
-                source["label"],
-                data["num_requests_running"], data["num_requests_waiting"],
-            )
+        # Never let a transient error (locked DB, disk hiccup, malformed
+        # response) kill the thread — a dead scraper silently freezes that
+        # source's dashboard while everything else keeps working.
+        try:
+            data = collect_metrics(source_id)
+            if data:
+                store_metrics(source_id, data)
+                logger.debug(
+                    "Collected [%s]: running=%.0f waiting=%.0f",
+                    source["label"],
+                    data["num_requests_running"], data["num_requests_waiting"],
+                )
+        except Exception:
+            logger.exception("Scrape/store failed for %s; will retry",
+                             source["label"])
         time.sleep(scrape_interval)
 
 
