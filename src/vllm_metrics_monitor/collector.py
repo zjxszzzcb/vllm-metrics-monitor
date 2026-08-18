@@ -555,7 +555,12 @@ def start_scraper():
     def cleanup_loop():
         while True:
             time.sleep(3600)
-            cleanup_db()
+            # Same rule as the scraper: a transient DB error must not kill
+            # the only cleanup thread, or old rows accumulate forever.
+            try:
+                cleanup_db()
+            except Exception:
+                logger.exception("Database cleanup failed; will retry")
 
     threading.Thread(target=cleanup_loop, daemon=True).start()
 
