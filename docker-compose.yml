@@ -10,6 +10,16 @@ services:
     volumes:
       - vmm-data:/root/.vmm
     restart: unless-stopped
+    healthcheck:
+      # Surfaces an unresponsive dashboard as "unhealthy" in docker ps.
+      # (Plain Docker does not auto-restart unhealthy containers; pair with
+      # an autoheal service if you want that.)
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/sources', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 volumes:
   vmm-data:
