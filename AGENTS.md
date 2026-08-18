@@ -8,7 +8,7 @@ Guidance for AI coding agents working in this repository. Assumes no prior knowl
 
 **Zero external runtime dependencies** — the backend uses only the Python standard library (the frontend loads Chart.js from a CDN). Keep it that way; do not add dependencies unless truly necessary.
 
-- Package name: `vllm-metrics-monitor`, current version `0.4.0` (bump in `pyproject.toml` when releasing)
+- Package name: `vllm-metrics-monitor`, current version `0.4.1` (bump in `pyproject.toml` when releasing)
 - Python ≥ 3.10, build backend: Hatchling, `src/` layout
 - CLI entry point: `vmm = "vllm_metrics_monitor.cli:main"`
 - Package manager: **uv** (see `uv.lock`)
