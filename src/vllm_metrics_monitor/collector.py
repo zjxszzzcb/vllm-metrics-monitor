@@ -348,7 +348,11 @@ def collect_metrics(source_id: int) -> dict | None:
     source = _source_by_id(source_id)
     last = _last_snapshots.get(source_id)
     try:
-        req = Request(source["url"], headers={"Accept": "text/plain"})
+        headers = {"Accept": "text/plain"}
+        token = os.environ.get("VLLM_API_KEY")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = Request(source["url"], headers=headers)
         with urlopen(req, timeout=5) as resp:
             text = resp.read().decode()
     except (URLError, OSError) as e:
